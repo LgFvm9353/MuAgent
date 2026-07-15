@@ -4,6 +4,7 @@ from uuid import UUID
 
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from app.agents.definitions import build_agent_registry
 from app.agents.runtime import ClaudeAgentRuntime
@@ -30,8 +31,10 @@ class Coordinator:
         self._active: dict[UUID, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         self._client = anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key.get_secret_value() if settings.anthropic_api_key else None,
-            max_retries=2,
+            api_key=settings.anthropic_api_key.get_secret_value()
+            if settings.anthropic_api_key
+            else None,
+            max_retries=0,
             timeout=settings.model_timeout_seconds,
         )
         self._gateway = ModelGateway(
@@ -71,12 +74,15 @@ class Coordinator:
         await self._client.close()
 
     async def _run(self, task_id: UUID) -> None:
+        trace_id = await self._trace_id(task_id)
+        clear_contextvars()
+        bind_contextvars(task_id=str(task_id), trace_id=str(trace_id))
         tools = build_tool_registry(self._settings, str(task_id))
         runtime = ClaudeAgentRuntime(self._gateway, self._agents, tools)
         try:
             state = await self._state(task_id)
+            orchestrator = OrchestratorService(self._sessions, runtime, self._agents, tools)
             if state is TaskState.PENDING:
-                orchestrator = OrchestratorService(self._sessions, runtime, self._agents, tools)
                 await orchestrator.run(task_id)
                 state = await self._state(task_id)
             if state is TaskState.EXECUTING:
@@ -86,11 +92,29 @@ class Coordinator:
                     self._agents,
                     ToolExecutor(tools),
                 ).execute(task_id)
+                state = await self._state(task_id)
+            if state is TaskState.REPLANNING:
+                await orchestrator.replan(task_id)
+                state = await self._state(task_id)
+                if state is TaskState.EXECUTING:
+                    await ExecutionService(
+                        self._sessions,
+                        runtime,
+                        self._agents,
+                        ToolExecutor(tools),
+                    ).execute(task_id)
         except asyncio.CancelledError:
             await self._finish(task_id, TaskState.CANCELLED, "background operation cancelled")
             raise
         except Exception as error:
             await self._finish(task_id, TaskState.FAILED, type(error).__name__)
+        finally:
+            clear_contextvars()
+
+    async def _trace_id(self, task_id: UUID) -> UUID:
+        async with self._sessions() as session:
+            task = await TaskRepository(session).get(task_id)
+            return task.trace_id
 
     async def _state(self, task_id: UUID) -> TaskState:
         async with self._sessions() as session:
@@ -105,7 +129,13 @@ class Coordinator:
             except TaskNotFoundError:
                 return
             current = TaskState(task.state)
-            if current in {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.CANCELLED, TaskState.REJECTED, TaskState.BUDGET_EXCEEDED}:
+            if current in {
+                TaskState.SUCCEEDED,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+                TaskState.REJECTED,
+                TaskState.BUDGET_EXCEEDED,
+            }:
                 return
             try:
                 await repository.transition(

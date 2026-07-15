@@ -16,7 +16,10 @@ def redact(value: Any, *, key: str | None = None) -> Any:
     if isinstance(value, str):
         return sanitize_text(value)
     if isinstance(value, Mapping):
-        return {str(item_key): redact(item_value, key=str(item_key)) for item_key, item_value in value.items()}
+        return {
+            str(item_key): redact(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [redact(item) for item in value]
     return value

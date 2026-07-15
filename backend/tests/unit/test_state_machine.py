@@ -14,7 +14,7 @@ def test_happy_path() -> None:
         TaskState.VERIFYING,
         TaskState.SUCCEEDED,
     )
-    for current, target in zip(path, path[1:], strict=True):
+    for current, target in zip(path, path[1:]):
         validate_transition(current, target)
 
 

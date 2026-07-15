@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -15,9 +17,57 @@ class ConfirmationConflictError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class PendingConfirmation:
+    plan_id: UUID
+    plan_version: int
+    step_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    impact: str
+    risk: str
+    call_hash: str
+
+
 class ConfirmationService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def pending(self, task_id: UUID) -> tuple[PendingConfirmation, ...]:
+        task = await self._session.get(Task, task_id)
+        if task is None or task.state != TaskState.WAITING_CONFIRMATION.value:
+            return ()
+        plan_record = await self._session.scalar(
+            select(ExecutionPlanRecord)
+            .where(ExecutionPlanRecord.task_id == task_id)
+            .order_by(ExecutionPlanRecord.version.desc())
+            .limit(1)
+        )
+        if plan_record is None:
+            raise ConfirmationConflictError("waiting task has no execution plan")
+        plan = ExecutionPlan.model_validate(plan_record.content)
+        decided_hashes = set(
+            await self._session.scalars(
+                select(Confirmation.call_hash).where(
+                    Confirmation.task_id == task_id,
+                    Confirmation.plan_id == plan.plan_id,
+                )
+            )
+        )
+        return tuple(
+            PendingConfirmation(
+                plan_id=plan.plan_id,
+                plan_version=plan.version,
+                step_id=step.step_id,
+                tool_name=step.tool_name,
+                arguments=step.arguments,
+                impact=step.expected_result,
+                risk=step.risk.value,
+                call_hash=plan_call_hash(plan, step),
+            )
+            for step in plan.steps
+            if step.risk is RiskLevel.HIGH and plan_call_hash(plan, step) not in decided_hashes
+        )
 
     async def decide(
         self,

@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -29,6 +29,33 @@ class ConfirmationResponse(BaseModel):
     call_hash: str
     approved: bool
     decided_by: str
+
+
+class PendingConfirmationResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    plan_id: UUID
+    plan_version: int
+    step_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    impact: str
+    risk: str
+    call_hash: str
+
+
+@router.get(
+    "/{task_id}/confirmations/pending",
+    response_model=tuple[PendingConfirmationResponse, ...],
+)
+async def list_pending_confirmations(
+    task_id: UUID,
+    session: Session,
+) -> tuple[PendingConfirmationResponse, ...]:
+    try:
+        requirements = await ConfirmationService(session).pending(task_id)
+    except ConfirmationConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return tuple(PendingConfirmationResponse.model_validate(item) for item in requirements)
 
 
 @router.post("/{task_id}/confirmations", response_model=ConfirmationResponse)

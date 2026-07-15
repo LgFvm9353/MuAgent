@@ -2,7 +2,12 @@ from pathlib import Path
 
 from app.config import Settings
 from app.contracts.task import RiskLevel
-from app.tools.check_tool import AllowedCommand, CheckCommandInput, CheckCommandOutput, CheckCommandTool
+from app.tools.check_tool import (
+    AllowedCommand,
+    CheckCommandInput,
+    CheckCommandOutput,
+    CheckCommandTool,
+)
 from app.tools.file_tools import (
     FileContentOutput,
     FileListOutput,
@@ -39,7 +44,9 @@ def build_tool_registry(settings: Settings, task_id: str) -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="list_workspace_files",
-            description="List regular files inside the task workspace. Use for workspace discovery only.",
+            description=(
+                "List regular files inside the task workspace. Use for workspace discovery only."
+            ),
             input_model=ListFilesInput,
             output_model=FileListOutput,
             risk=RiskLevel.LOW,
@@ -78,7 +85,10 @@ def build_tool_registry(settings: Settings, task_id: str) -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="modify_workspace_file",
-            description="Replace an existing UTF-8 file and return a unified diff. Requires confirmation as a high-risk overwrite.",
+            description=(
+                "Replace an existing UTF-8 file and return a unified diff. "
+                "Requires confirmation as a high-risk overwrite."
+            ),
             input_model=WriteFileInput,
             output_model=WriteFileOutput,
             risk=RiskLevel.HIGH,
@@ -91,7 +101,9 @@ def build_tool_registry(settings: Settings, task_id: str) -> ToolRegistry:
     registry.register(
         ToolDefinition(
             name="run_allowlisted_check",
-            description="Run a configured side-effect-free check command inside the task workspace.",
+            description=(
+                "Run a configured side-effect-free check command inside the task workspace."
+            ),
             input_model=CheckCommandInput,
             output_model=CheckCommandOutput,
             risk=RiskLevel.LOW,

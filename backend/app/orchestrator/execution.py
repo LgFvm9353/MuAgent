@@ -39,9 +39,8 @@ class ExecutionService:
 
     async def execute(self, task_id: UUID) -> None:
         contract, plan = await self._load(task_id)
-        evidence: list[dict[str, Any]] = []
-        completed: set[str] = set()
-        remaining = {step.step_id: step for step in plan.steps}
+        completed, evidence = await self._load_progress(task_id, plan)
+        remaining = {step.step_id: step for step in plan.steps if step.step_id not in completed}
         while remaining:
             ready = [step for step in remaining.values() if step.depends_on <= completed]
             if not ready:
@@ -116,11 +115,14 @@ class ExecutionService:
                     content=report.model_dump(mode="json"),
                 )
             )
-            target = {
-                "passed": TaskState.SUCCEEDED,
-                "failed": TaskState.FAILED,
-                "needs_review": TaskState.NEEDS_REVIEW,
-            }[report.verdict]
+            if report.verdict == "failed" and report.recommendation == "replan":
+                target = TaskState.REPLANNING
+            else:
+                target = {
+                    "passed": TaskState.SUCCEEDED,
+                    "failed": TaskState.FAILED,
+                    "needs_review": TaskState.NEEDS_REVIEW,
+                }[report.verdict]
             await repository.transition(
                 task_id,
                 target,
@@ -143,7 +145,48 @@ class ExecutionService:
             )
             if plan_record is None:
                 raise RuntimeError("task has no execution plan")
-            return TaskContract.model_validate(task.contract), ExecutionPlan.model_validate(plan_record.content)
+            return TaskContract.model_validate(task.contract), ExecutionPlan.model_validate(
+                plan_record.content
+            )
+
+    async def _load_progress(
+        self,
+        task_id: UUID,
+        plan: ExecutionPlan,
+    ) -> tuple[set[str], list[dict[str, Any]]]:
+        async with self._sessions() as session:
+            records = list(
+                await session.scalars(
+                    select(ExecutionStepRecord)
+                    .join(ExecutionPlanRecord)
+                    .where(ExecutionPlanRecord.id == plan.plan_id)
+                )
+            )
+            completed = {record.step_key for record in records if record.status == "succeeded"}
+            uncertain = [
+                record.step_key for record in records if record.status in {"running", "failed"}
+            ]
+            if uncertain:
+                raise RuntimeError(
+                    "execution contains uncertain or failed steps requiring review: "
+                    + ", ".join(sorted(uncertain))
+                )
+            record_ids = [record.id for record in records]
+            evidence = (
+                list(
+                    await session.scalars(
+                        select(EvidenceRecordModel)
+                        .where(
+                            EvidenceRecordModel.task_id == task_id,
+                            EvidenceRecordModel.step_id.in_(record_ids),
+                        )
+                        .order_by(EvidenceRecordModel.created_at)
+                    )
+                )
+                if record_ids
+                else []
+            )
+            return completed, [item.content for item in evidence]
 
     async def _check_cancelled(self, task_id: UUID) -> None:
         async with self._sessions() as session:
@@ -187,15 +230,31 @@ class ExecutionService:
             step_record.status = "running"
             await session.commit()
 
-        execution = await self._executor.execute(task_id, plan_version, step)
+        try:
+            execution = await self._executor.execute(task_id, plan_version, step)
+        except Exception as error:
+            async with self._sessions() as session:
+                failed_call = await session.scalar(
+                    select(ToolCall).where(ToolCall.idempotency_key == key).with_for_update()
+                )
+                if failed_call is not None:
+                    failed_call.status = "failed"
+                    failed_call.error_type = type(error).__name__
+                    step_record = await session.get(ExecutionStepRecord, failed_call.step_id)
+                    if step_record is not None:
+                        step_record.status = "failed"
+                    await session.commit()
+            raise
         result = execution.output.model_dump(mode="json")
         async with self._sessions() as session:
-            call = await session.scalar(select(ToolCall).where(ToolCall.idempotency_key == key).with_for_update())
-            if call is None:
+            completed_call = await session.scalar(
+                select(ToolCall).where(ToolCall.idempotency_key == key).with_for_update()
+            )
+            if completed_call is None:
                 raise RuntimeError("tool call record disappeared")
-            step_record = await session.get(ExecutionStepRecord, call.step_id)
-            call.status = "succeeded"
-            call.result = result
+            step_record = await session.get(ExecutionStepRecord, completed_call.step_id)
+            completed_call.status = "succeeded"
+            completed_call.result = result
             if step_record is not None:
                 step_record.status = "succeeded"
             evidence = execution.evidence
@@ -203,7 +262,7 @@ class ExecutionService:
                 EvidenceRecordModel(
                     id=evidence.evidence_id,
                     task_id=task_id,
-                    step_id=call.step_id,
+                    step_id=completed_call.step_id,
                     kind=evidence.kind,
                     content=evidence.model_dump(mode="json"),
                     sha256=evidence.sha256,

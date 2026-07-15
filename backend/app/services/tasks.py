@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contracts.task import TaskContract
 from app.models import Task
+from app.orchestrator.state_machine import TERMINAL_STATES, TaskState
 from app.repositories import TaskRepository
 
 
@@ -27,5 +28,13 @@ class TaskService:
 
     async def cancel(self, task_id: UUID) -> Task:
         task = await self._repository.request_cancellation(task_id)
+        if TaskState(task.state) not in TERMINAL_STATES:
+            await self._repository.transition(
+                task_id,
+                TaskState.CANCELLED,
+                expected_version=task.version,
+                trace_id=task.trace_id,
+                reason="user requested cancellation",
+            )
         await self._session.commit()
         return task

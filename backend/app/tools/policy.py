@@ -30,7 +30,9 @@ def call_hash(plan: ExecutionPlan, step: ExecutionStep) -> str:
         "tool": step.tool_name,
         "arguments": step.arguments,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class ToolPolicy:

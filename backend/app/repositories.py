@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AuditEvent, Task, TaskEvent
+from app.models import AuditEvent, EvidenceRecordModel, Task, TaskEvent, UsageRecord
 from app.orchestrator.state_machine import TERMINAL_STATES, TaskState, validate_transition
 
 
@@ -77,6 +77,38 @@ class TaskRepository:
         task.cancel_requested = True
         task.updated_at = datetime.now(UTC)
         return task
+
+    async def timeline(self, task_id: UUID) -> list[TaskEvent]:
+        await self.get(task_id)
+        result = await self._session.scalars(
+            select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.id)
+        )
+        return list(result)
+
+    async def audit(self, task_id: UUID) -> list[AuditEvent]:
+        await self.get(task_id)
+        result = await self._session.scalars(
+            select(AuditEvent).where(AuditEvent.task_id == task_id).order_by(AuditEvent.id)
+        )
+        return list(result)
+
+    async def usage(self, task_id: UUID) -> list[UsageRecord]:
+        await self.get(task_id)
+        result = await self._session.scalars(
+            select(UsageRecord)
+            .where(UsageRecord.task_id == task_id)
+            .order_by(UsageRecord.created_at)
+        )
+        return list(result)
+
+    async def evidence(self, task_id: UUID) -> list[EvidenceRecordModel]:
+        await self.get(task_id)
+        result = await self._session.scalars(
+            select(EvidenceRecordModel)
+            .where(EvidenceRecordModel.task_id == task_id)
+            .order_by(EvidenceRecordModel.created_at)
+        )
+        return list(result)
 
     async def list_recoverable(self) -> list[Task]:
         terminal = [state.value for state in TERMINAL_STATES]

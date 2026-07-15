@@ -1,8 +1,10 @@
 import logging
 import sys
-from typing import Any
+from collections.abc import MutableMapping
+from typing import Any, cast
 
 import structlog
+from structlog.typing import EventDict, Processor
 
 from app.redaction import redact
 
@@ -10,21 +12,22 @@ from app.redaction import redact
 def _redact_event(
     _: object,
     __: str,
-    event_dict: dict[str, Any],
-) -> dict[str, Any]:
-    return redact(event_dict)
+    event_dict: MutableMapping[str, Any],
+) -> EventDict:
+    return cast(EventDict, redact(dict(event_dict)))
 
 
 def configure_logging(level: str) -> None:
+    processors: list[Processor] = [
+        structlog.contextvars.merge_contextvars,
+        _redact_event,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.JSONRenderer(),
+    ]
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level.upper())
     structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            _redact_event,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.processors.JSONRenderer(),
-        ],
+        processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(
             logging.getLevelNamesMapping().get(level.upper(), logging.INFO)
         ),
@@ -34,4 +37,4 @@ def configure_logging(level: str) -> None:
 
 
 def logger() -> structlog.stdlib.BoundLogger:
-    return structlog.get_logger()
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger())

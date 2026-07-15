@@ -1,7 +1,13 @@
 import json
 from typing import Any, cast
 
-from app.contracts.agents import AgentDecision, AgentProposal, Critique, CritiqueSet, VerificationReport
+from app.contracts.agents import (
+    AgentDecision,
+    AgentProposal,
+    Critique,
+    CritiqueSet,
+    VerificationReport,
+)
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.context import ContextBuilder
@@ -30,14 +36,42 @@ class ClaudeAgentRuntime:
         return invocations
 
     async def analyst(self, task: TaskContract) -> AgentProposal:
-        return cast(AgentProposal, await self._call("analyst", self._context.analyst(task), AgentProposal))
+        return cast(
+            AgentProposal, await self._call("analyst", self._context.analyst(task), AgentProposal)
+        )
 
     async def domain_expert(self, task: TaskContract) -> AgentProposal:
         catalog = self._tools.catalog(task.allowed_tools)
-        return cast(AgentProposal, await self._call("domain_expert", self._context.domain_expert(task, catalog), AgentProposal))
+        return cast(
+            AgentProposal,
+            await self._call(
+                "domain_expert", self._context.domain_expert(task, catalog), AgentProposal
+            ),
+        )
 
-    async def critic(self, task: TaskContract, proposals: tuple[AgentProposal, ...]) -> tuple[Critique, ...]:
-        context = self._context.critic(task, tuple(item.model_dump(mode="json") for item in proposals))
+    async def revise(
+        self,
+        agent_id: str,
+        task: TaskContract,
+        proposal: AgentProposal,
+        feedback: tuple[str, ...],
+    ) -> AgentProposal:
+        if agent_id not in {"analyst", "domain_expert"}:
+            raise ValueError("only proposal agents can revise")
+        context = {
+            "task": self._context.analyst(task),
+            "previous_proposal": proposal.model_dump(mode="json"),
+            "required_revisions": feedback,
+            "instruction": "Revise only the disputed points without expanding scope.",
+        }
+        return cast(AgentProposal, await self._call(agent_id, context, AgentProposal))
+
+    async def critic(
+        self, task: TaskContract, proposals: tuple[AgentProposal, ...]
+    ) -> tuple[Critique, ...]:
+        context = self._context.critic(
+            task, tuple(item.model_dump(mode="json") for item in proposals)
+        )
         result = cast(CritiqueSet, await self._call("critic", context, CritiqueSet))
         return result.critiques
 
@@ -55,7 +89,26 @@ class ClaudeAgentRuntime:
         return cast(AgentDecision, await self._call("judge", context, AgentDecision))
 
     async def planner(self, task: TaskContract, decision: AgentDecision) -> ExecutionPlan:
-        context = self._context.planner(decision.model_dump(mode="json"), self._tools.catalog(task.allowed_tools))
+        context = self._context.planner(
+            decision.model_dump(mode="json"), self._tools.catalog(task.allowed_tools)
+        )
+        return cast(ExecutionPlan, await self._call("planner", context, ExecutionPlan))
+
+    async def replanner(
+        self,
+        task: TaskContract,
+        decision: AgentDecision,
+        prior_plan: ExecutionPlan,
+        verification: VerificationReport,
+        evidence: tuple[dict[str, Any], ...],
+    ) -> ExecutionPlan:
+        context = self._context.replanner(
+            decision.model_dump(mode="json"),
+            prior_plan.model_dump(mode="json"),
+            verification.model_dump(mode="json"),
+            evidence,
+            self._tools.catalog(task.allowed_tools),
+        )
         return cast(ExecutionPlan, await self._call("planner", context, ExecutionPlan))
 
     async def verifier(
@@ -71,7 +124,11 @@ class ClaudeAgentRuntime:
         self,
         agent_id: str,
         context: dict[str, Any],
-        output_model: type[AgentProposal] | type[CritiqueSet] | type[AgentDecision] | type[ExecutionPlan] | type[VerificationReport],
+        output_model: type[AgentProposal]
+        | type[CritiqueSet]
+        | type[AgentDecision]
+        | type[ExecutionPlan]
+        | type[VerificationReport],
     ) -> object:
         definition = self._agents.get(agent_id)
         result = await self._gateway.structured(

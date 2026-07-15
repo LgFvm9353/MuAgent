@@ -20,10 +20,34 @@ class AgentInvocation:
 class AgentRuntime(Protocol):
     async def analyst(self, task: TaskContract) -> AgentProposal: ...
     async def domain_expert(self, task: TaskContract) -> AgentProposal: ...
-    async def critic(self, task: TaskContract, proposals: tuple[AgentProposal, ...]) -> tuple[Critique, ...]: ...
-    async def judge(self, task: TaskContract, proposals: tuple[AgentProposal, ...], critiques: tuple[Critique, ...]) -> AgentDecision: ...
+    async def critic(
+        self, task: TaskContract, proposals: tuple[AgentProposal, ...]
+    ) -> tuple[Critique, ...]: ...
+    async def revise(
+        self,
+        agent_id: str,
+        task: TaskContract,
+        proposal: AgentProposal,
+        feedback: tuple[str, ...],
+    ) -> AgentProposal: ...
+    async def judge(
+        self,
+        task: TaskContract,
+        proposals: tuple[AgentProposal, ...],
+        critiques: tuple[Critique, ...],
+    ) -> AgentDecision: ...
     async def planner(self, task: TaskContract, decision: AgentDecision) -> ExecutionPlan: ...
-    async def verifier(self, task: TaskContract, plan: ExecutionPlan, evidence: tuple[dict[str, Any], ...]) -> VerificationReport: ...
+    async def replanner(
+        self,
+        task: TaskContract,
+        decision: AgentDecision,
+        prior_plan: ExecutionPlan,
+        verification: VerificationReport,
+        evidence: tuple[dict[str, Any], ...],
+    ) -> ExecutionPlan: ...
+    async def verifier(
+        self, task: TaskContract, plan: ExecutionPlan, evidence: tuple[dict[str, Any], ...]
+    ) -> VerificationReport: ...
     def drain_invocations(self) -> tuple[AgentInvocation, ...]: ...
 
 
@@ -58,8 +82,36 @@ class Scheduler:
             group.create_task(run_expert(), name=f"domain-expert:{task.task_id}")
         if analyst is None or expert is None:
             raise RuntimeError("parallel analysis did not produce both proposals")
-        proposals = (analyst, expert)
+        proposals: tuple[AgentProposal, ...] = (analyst, expert)
         critiques = await self._runtime.critic(task, proposals)
+        no_information_rounds = 0
+        for _ in range(task.budget.max_revisions):
+            feedback_by_index = {
+                critique.proposal_index: critique.required_revisions
+                for critique in critiques
+                if critique.required_revisions
+            }
+            if not feedback_by_index:
+                break
+            revised = list(proposals)
+            changed = False
+            for index, feedback in feedback_by_index.items():
+                if index >= len(revised):
+                    raise RuntimeError("critic referenced an unknown proposal")
+                agent_id = ("analyst", "domain_expert")[index]
+                candidate = await self._runtime.revise(
+                    agent_id,
+                    task,
+                    revised[index],
+                    feedback,
+                )
+                changed = changed or candidate != revised[index]
+                revised[index] = candidate
+            proposals = tuple(revised)
+            no_information_rounds = 0 if changed else no_information_rounds + 1
+            if no_information_rounds >= 2:
+                raise RuntimeError("discussion produced no new valid information")
+            critiques = await self._runtime.critic(task, proposals)
         decision = await self._runtime.judge(task, proposals, critiques)
         if not decision.may_plan:
             raise RuntimeError("judge did not approve planning")

@@ -25,7 +25,9 @@ def idempotency_key(task_id: UUID, plan_version: int, step: ExecutionStep) -> st
         "tool_name": step.tool_name,
         "arguments": step.arguments,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class ToolExecutor:

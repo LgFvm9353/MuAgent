@@ -1,7 +1,10 @@
-from uuid import UUID, uuid4
+from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.contracts.agents import AgentDecision, VerificationReport
+from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.pricing import estimate_cost
 from app.harness.registry import AgentRegistry
@@ -10,10 +13,12 @@ from app.models import (
     AgentRun,
     Decision,
     DeliberationRound,
+    EvidenceRecordModel,
     ExecutionPlanRecord,
     ExecutionStepRecord,
     Proposal,
     UsageRecord,
+    VerificationReportModel,
 )
 from app.orchestrator.scheduler import AgentRuntime, Scheduler
 from app.orchestrator.state_machine import TaskState
@@ -65,15 +70,23 @@ class OrchestratorService:
         async with self._sessions() as session:
             repository = TaskRepository(session)
             task = await repository.get(task_id, for_update=True)
-            session.add(
-                DeliberationRound(
-                    task_id=task_id,
-                    round_number=1,
-                    new_information=True,
-                )
-            )
             invocations = self._runtime.drain_invocations()
-            proposal_by_agent = dict(zip(("analyst", "domain_expert"), result.proposals, strict=True))
+            for round_number, _ in enumerate(
+                (item for item in invocations if item.agent_id == "critic"),
+                start=1,
+            ):
+                session.add(
+                    DeliberationRound(
+                        task_id=task_id,
+                        round_number=round_number,
+                        new_information=True,
+                    )
+                )
+            proposal_by_agent = dict(
+                zip(("analyst", "domain_expert"), result.proposals, strict=True)
+            )
+            total_tokens = 0
+            total_cost = 0.0
             for invocation in invocations:
                 definition = self._agents.get(invocation.agent_id)
                 run = AgentRun(
@@ -89,6 +102,17 @@ class OrchestratorService:
                 session.add(run)
                 await session.flush()
                 usage = invocation.usage
+                estimated_cost = float(
+                    estimate_cost(
+                        usage.model,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                        cache_read_input_tokens=usage.cache_read_input_tokens,
+                    )
+                )
+                total_tokens += usage.total_input_tokens + usage.output_tokens
+                total_cost += estimated_cost
                 session.add(
                     UsageRecord(
                         task_id=task_id,
@@ -102,15 +126,7 @@ class OrchestratorService:
                         cache_read_input_tokens=usage.cache_read_input_tokens,
                         latency_ms=usage.latency_ms,
                         retry_count=usage.retry_count,
-                        estimated_cost_usd=float(
-                            estimate_cost(
-                                usage.model,
-                                input_tokens=usage.input_tokens,
-                                output_tokens=usage.output_tokens,
-                                cache_creation_input_tokens=usage.cache_creation_input_tokens,
-                                cache_read_input_tokens=usage.cache_read_input_tokens,
-                            )
-                        ),
+                        estimated_cost_usd=estimated_cost,
                     )
                 )
                 proposal = proposal_by_agent.get(invocation.agent_id)
@@ -123,6 +139,19 @@ class OrchestratorService:
                             content=proposal.model_dump(mode="json"),
                         )
                     )
+            if (
+                total_tokens > contract.budget.max_tokens
+                or total_cost > contract.budget.max_cost_usd
+            ):
+                await repository.transition(
+                    task_id,
+                    TaskState.BUDGET_EXCEEDED,
+                    expected_version=task.version,
+                    trace_id=task.trace_id,
+                    reason="agent usage exceeded task budget",
+                )
+                await session.commit()
+                return
             await repository.transition(
                 task_id,
                 TaskState.DECIDING,
@@ -182,6 +211,117 @@ class OrchestratorService:
                 target,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason="high-risk confirmation required" if confirmations else "tool policy approved",
+                reason="high-risk confirmation required"
+                if confirmations
+                else "tool policy approved",
+            )
+            await session.commit()
+
+    async def replan(self, task_id: UUID) -> None:
+        async with self._sessions() as session:
+            repository = TaskRepository(session)
+            task = await repository.get(task_id, for_update=True)
+            if TaskState(task.state) is not TaskState.REPLANNING:
+                raise RuntimeError("task is not waiting for replanning")
+            contract = TaskContract.model_validate(task.contract)
+            current_plan = await session.scalar(
+                select(ExecutionPlanRecord)
+                .where(ExecutionPlanRecord.task_id == task_id)
+                .order_by(ExecutionPlanRecord.version.desc())
+                .limit(1)
+            )
+            decision_record = await session.scalar(
+                select(Decision)
+                .where(Decision.task_id == task_id)
+                .order_by(Decision.version.desc())
+                .limit(1)
+            )
+            if current_plan is None or decision_record is None:
+                raise RuntimeError("replanning requires a prior plan and decision")
+            if current_plan.version >= 1 + contract.budget.max_revisions:
+                await repository.transition(
+                    task_id,
+                    TaskState.NEEDS_REVIEW,
+                    expected_version=task.version,
+                    trace_id=task.trace_id,
+                    reason="replanning limit reached",
+                )
+                await session.commit()
+                return
+            verification_record = await session.scalar(
+                select(VerificationReportModel)
+                .where(
+                    VerificationReportModel.task_id == task_id,
+                    VerificationReportModel.plan_id == current_plan.id,
+                )
+                .order_by(VerificationReportModel.created_at.desc())
+                .limit(1)
+            )
+            if verification_record is None:
+                raise RuntimeError("replanning requires a verification report")
+            evidence_records = list(
+                await session.scalars(
+                    select(EvidenceRecordModel)
+                    .where(EvidenceRecordModel.task_id == task_id)
+                    .order_by(EvidenceRecordModel.created_at)
+                )
+            )
+            decision = AgentDecision.model_validate(decision_record.content)
+            prior_plan = ExecutionPlan.model_validate(current_plan.content)
+            verification = VerificationReport.model_validate(verification_record.content)
+            evidence = tuple(record.content for record in evidence_records)
+            next_version = current_plan.version + 1
+            decision_id = decision_record.id
+
+        new_plan = await self._runtime.replanner(
+            contract,
+            decision,
+            prior_plan,
+            verification,
+            evidence,
+        )
+        new_plan = new_plan.model_copy(update={"task_id": task_id, "version": next_version})
+        validate_plan(new_plan, contract, self._tools)
+
+        async with self._sessions() as session:
+            repository = TaskRepository(session)
+            task = await repository.get(task_id, for_update=True)
+            plan_record = ExecutionPlanRecord(
+                id=new_plan.plan_id,
+                task_id=task_id,
+                version=new_plan.version,
+                decision_id=decision_id,
+                content=new_plan.model_dump(mode="json"),
+            )
+            session.add(plan_record)
+            for step in new_plan.steps:
+                session.add(
+                    ExecutionStepRecord(
+                        plan_id=plan_record.id,
+                        step_key=step.step_id,
+                        status="pending",
+                        content=step.model_dump(mode="json"),
+                    )
+                )
+            await repository.transition(
+                task_id,
+                TaskState.POLICY_CHECK,
+                expected_version=task.version,
+                trace_id=task.trace_id,
+                reason="replanned execution passed validation",
+            )
+            await session.flush()
+            task = await repository.get(task_id, for_update=True)
+            confirmations = ToolPolicy(self._tools).confirmations(new_plan)
+            await repository.transition(
+                task_id,
+                TaskState.WAITING_CONFIRMATION if confirmations else TaskState.EXECUTING,
+                expected_version=task.version,
+                trace_id=task.trace_id,
+                reason=(
+                    "replanned high-risk operations require confirmation"
+                    if confirmations
+                    else "replanned execution approved"
+                ),
             )
             await session.commit()

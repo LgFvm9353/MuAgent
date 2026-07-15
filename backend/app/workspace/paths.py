@@ -37,7 +37,9 @@ class Workspace:
         replacing_exists = replacing is not None and replacing.is_file()
         if len(files) + (0 if replacing_exists else 1) > self.max_files:
             raise WorkspaceViolationError("file count limit exceeded")
-        replaced_size = replacing.stat().st_size if replacing_exists and replacing is not None else 0
+        replaced_size = (
+            replacing.stat().st_size if replacing_exists and replacing is not None else 0
+        )
         total = sum(path.stat().st_size for path in files) - replaced_size
         if total + incoming_bytes > self.max_total_bytes:
             raise WorkspaceViolationError("workspace size limit exceeded")

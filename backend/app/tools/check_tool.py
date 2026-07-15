@@ -2,15 +2,13 @@ import asyncio
 import os
 from dataclasses import dataclass
 
-from pydantic import Field
-
 from app.contracts.base import ContractModel
 from app.workspace.paths import Workspace
 
 
 class CheckCommandInput(ContractModel):
     command: str
-    arguments: tuple[str, ...] = ()
+    arguments: tuple[str, ...]
 
 
 class CheckCommandOutput(ContractModel):
@@ -46,7 +44,11 @@ class CheckCommandTool:
             raise ValueError("command is not allowlisted")
         if request.arguments not in definition.argument_sets:
             raise ValueError("command arguments are not allowlisted")
-        environment = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP") if key in os.environ}
+        environment = {
+            key: os.environ[key]
+            for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP")
+            if key in os.environ
+        }
         process = await asyncio.create_subprocess_exec(
             definition.executable,
             *request.arguments,

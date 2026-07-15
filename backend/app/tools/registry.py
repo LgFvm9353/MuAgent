@@ -1,18 +1,14 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from pydantic import BaseModel
 
 from app.contracts.task import RiskLevel
 
-InputT = TypeVar("InputT", bound=BaseModel)
-OutputT = TypeVar("OutputT", bound=BaseModel)
-ToolHandler = Callable[[BaseModel], Awaitable[BaseModel]]
-
 
 @dataclass(frozen=True, slots=True)
-class ToolDefinition(Generic[InputT, OutputT]):
+class ToolDefinition[InputT: BaseModel, OutputT: BaseModel]:
     name: str
     description: str
     input_model: type[InputT]
@@ -26,6 +22,8 @@ class ToolDefinition(Generic[InputT, OutputT]):
     def anthropic_schema(self) -> dict[str, Any]:
         schema = self.input_model.model_json_schema()
         schema["additionalProperties"] = False
+        properties = schema.get("properties", {})
+        schema["required"] = sorted(properties)
         return {
             "name": self.name,
             "description": self.description,

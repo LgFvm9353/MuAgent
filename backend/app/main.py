@@ -13,6 +13,8 @@ from app.orchestrator.coordinator import Coordinator
 from app.orchestrator.recovery import RecoveryService
 from app.tools.factory import ensure_storage_roots
 
+PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
+
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -23,7 +25,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.coordinator = Coordinator(
         settings,
         application.state.database.session_factory,
-        Path(__file__).resolve().parents[1] / "prompts",
+        PROMPTS_ROOT,
     )
     async with application.state.database.session_factory() as session:
         await RecoveryService(session).recover(application.state.coordinator.schedule)

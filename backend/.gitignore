@@ -11,3 +11,4 @@ data/workspaces/*
 !data/workspaces/.gitkeep
 data/artifacts/*
 !data/artifacts/.gitkeep
+tests/

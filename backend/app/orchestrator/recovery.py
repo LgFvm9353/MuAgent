@@ -1,9 +1,10 @@
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Task
+from app.models import Task, ToolCall
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
 
@@ -25,6 +26,10 @@ class RecoveryService:
                 await schedule(task.id)
                 recovered.append(task.id)
                 continue
+            if state is TaskState.EXECUTING and not await self._has_uncertain_side_effect(task):
+                await schedule(task.id)
+                recovered.append(task.id)
+                continue
             await self._repository.transition(
                 task.id,
                 TaskState.NEEDS_REVIEW,
@@ -32,15 +37,22 @@ class RecoveryService:
                 trace_id=task.trace_id,
                 reason=(
                     "execution state requires idempotency review after restart"
-                    if self._has_uncertain_side_effect(task)
+                    if state is TaskState.EXECUTING
                     else "interrupted workflow requires deterministic review after restart"
                 ),
             )
             await self._session.commit()
         return tuple(recovered)
 
-    @staticmethod
-    def _has_uncertain_side_effect(task: Task) -> bool:
-        # Tool calls are loaded by the execution recovery path. A task in EXECUTING
-        # is conservatively withheld until its persisted calls have been classified.
-        return TaskState(task.state) is TaskState.EXECUTING
+    async def _has_uncertain_side_effect(self, task: Task) -> bool:
+        if TaskState(task.state) is not TaskState.EXECUTING:
+            return False
+        uncertain = await self._session.scalar(
+            select(ToolCall.id)
+            .where(
+                ToolCall.task_id == task.id,
+                ToolCall.status.in_(("started", "running", "failed")),
+            )
+            .limit(1)
+        )
+        return uncertain is not None
