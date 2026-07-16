@@ -18,7 +18,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
         return AgentDefinition(
             agent_id=agent_id,
             role=role,
-            model=settings.anthropic_model,
+            model=settings.model_name,
             prompt_path=prompts_root / prompt,
             prompt_version="v1",
             schema_version="v1",

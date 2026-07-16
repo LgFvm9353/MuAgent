@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.confirmations import router as confirmations_router
 from app.api.tasks import router as tasks_router
@@ -36,7 +37,15 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         await application.state.database.dispose()
 
 
+settings = get_settings()
 app = FastAPI(title="Harness Agent System", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 app.include_router(tasks_router)
 app.include_router(confirmations_router)
 

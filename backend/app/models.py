@@ -13,15 +13,17 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    Uuid,
 )
-from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
 from app.orchestrator.state_machine import TaskState
 
 
 class Base(DeclarativeBase):
-    pass
+    @declared_attr.directive
+    def __table_args__(cls) -> dict[str, str]:
+        return {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"}
 
 
 class TimestampMixin:
@@ -32,8 +34,8 @@ class TimestampMixin:
 
 class Task(Base, TimestampMixin):
     __tablename__ = "tasks"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    trace_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False, index=True)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
+    trace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), nullable=False, index=True)
     state: Mapped[str] = mapped_column(String(32), default=TaskState.PENDING, index=True)
     contract: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
@@ -57,7 +59,7 @@ class TaskEvent(Base, TimestampMixin):
 
 class AgentRun(Base, TimestampMixin):
     __tablename__ = "agent_runs"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -71,16 +73,19 @@ class AgentRun(Base, TimestampMixin):
 
 class DeliberationRound(Base, TimestampMixin):
     __tablename__ = "deliberation_rounds"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     round_number: Mapped[int] = mapped_column(Integer, nullable=False)
     new_information: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    __table_args__ = (UniqueConstraint("task_id", "round_number"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "round_number"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
 
 
 class Proposal(Base, TimestampMixin):
     __tablename__ = "proposals"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     agent_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
     version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -89,38 +94,47 @@ class Proposal(Base, TimestampMixin):
 
 class Decision(Base, TimestampMixin):
     __tablename__ = "decisions"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    __table_args__ = (UniqueConstraint("task_id", "version"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "version"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
 
 
 class ExecutionPlanRecord(Base, TimestampMixin):
     __tablename__ = "execution_plans"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     decision_id: Mapped[UUID] = mapped_column(ForeignKey("decisions.id"))
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    __table_args__ = (UniqueConstraint("task_id", "version"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "version"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
 
 
 class ExecutionStepRecord(Base, TimestampMixin):
     __tablename__ = "execution_steps"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     plan_id: Mapped[UUID] = mapped_column(
         ForeignKey("execution_plans.id", ondelete="CASCADE"), index=True
     )
     step_key: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    __table_args__ = (UniqueConstraint("plan_id", "step_key"),)
+    __table_args__ = (
+        UniqueConstraint("plan_id", "step_key"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
 
 
 class ToolCall(Base, TimestampMixin):
     __tablename__ = "tool_calls"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     step_id: Mapped[UUID] = mapped_column(ForeignKey("execution_steps.id"), index=True)
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -133,18 +147,21 @@ class ToolCall(Base, TimestampMixin):
 
 class Confirmation(Base, TimestampMixin):
     __tablename__ = "confirmations"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     plan_id: Mapped[UUID] = mapped_column(ForeignKey("execution_plans.id", ondelete="CASCADE"))
     call_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     approved: Mapped[bool] = mapped_column(Boolean, nullable=False)
     decided_by: Mapped[str] = mapped_column(String(100), nullable=False)
-    __table_args__ = (UniqueConstraint("task_id", "plan_id", "call_hash"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "plan_id", "call_hash"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
 
 
 class EvidenceRecordModel(Base, TimestampMixin):
     __tablename__ = "evidence_records"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     step_id: Mapped[UUID] = mapped_column(ForeignKey("execution_steps.id"), index=True)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -154,7 +171,7 @@ class EvidenceRecordModel(Base, TimestampMixin):
 
 class VerificationReportModel(Base, TimestampMixin):
     __tablename__ = "verification_reports"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     plan_id: Mapped[UUID] = mapped_column(ForeignKey("execution_plans.id"))
     verdict: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -167,14 +184,14 @@ class AuditEvent(Base, TimestampMixin):
     task_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("tasks.id", ondelete="CASCADE"), index=True
     )
-    trace_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    trace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), index=True)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
 class UsageRecord(Base, TimestampMixin):
     __tablename__ = "usage_records"
-    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     agent_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
     request_id: Mapped[str | None] = mapped_column(String(100), index=True)

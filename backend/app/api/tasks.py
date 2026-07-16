@@ -1,14 +1,20 @@
-from collections.abc import Awaitable, Callable, Sequence
+import asyncio
+import json
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import database_session
+from app.config import get_settings
 from app.contracts.task import TaskContract
+from app.models import Task, TaskEvent
+from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskNotFoundError, TaskRepository
 from app.services.tasks import TaskService
 
@@ -18,11 +24,41 @@ Session = Annotated[AsyncSession, Depends(database_session)]
 
 class TaskResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     trace_id: UUID
+    goal: str
     state: str
     version: int
     cancel_requested: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_goal(cls, value: Any) -> Any:
+        if isinstance(value, Task):
+            return {
+                "id": value.id,
+                "trace_id": value.trace_id,
+                "goal": str(value.contract.get("goal", "")),
+                "state": value.state,
+                "version": value.version,
+                "cancel_requested": value.cancel_requested,
+                "created_at": value.created_at,
+                "updated_at": value.updated_at,
+            }
+        return value
+
+
+@router.get("", response_model=list[TaskResponse])
+async def list_tasks(
+    session: Session,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[TaskResponse]:
+    tasks = await TaskService(session).list(limit=limit, offset=offset)
+    return [TaskResponse.model_validate(task) for task in tasks]
 
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
@@ -111,6 +147,64 @@ async def task_usage(task_id: UUID, session: Session) -> Sequence[Any]:
 @router.get("/{task_id}/evidence", response_model=list[EvidenceResponse])
 async def task_evidence(task_id: UUID, session: Session) -> Sequence[Any]:
     return await _repository_result(task_id, TaskRepository(session).evidence)
+
+
+def _sse(event: str, data: dict[str, Any], *, event_id: int | None = None) -> str:
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(f"data: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _event_data(event: TaskEvent) -> dict[str, Any]:
+    return EventResponse.model_validate(event).model_dump(mode="json")
+
+
+@router.get("/{task_id}/stream")
+async def stream_task_events(
+    task_id: UUID,
+    request: Request,
+    after: Annotated[int, Query(ge=0)] = 0,
+) -> StreamingResponse:
+    async with request.app.state.database.session_factory() as session:
+        try:
+            await TaskRepository(session).get(task_id)
+        except TaskNotFoundError as error:
+            raise HTTPException(status_code=404, detail="task not found") from error
+
+    settings = get_settings()
+
+    async def generate() -> AsyncIterator[str]:
+        cursor = after
+        since_heartbeat = 0.0
+        terminal_values = {state.value for state in TERMINAL_STATES}
+        while not await request.is_disconnected():
+            async with request.app.state.database.session_factory() as session:
+                repository = TaskRepository(session)
+                task = await repository.get(task_id)
+                events = await repository.timeline_after(task_id, after=cursor)
+
+            for event in events:
+                cursor = event.id
+                yield _sse("task_event", _event_data(event), event_id=event.id)
+
+            if task.state in terminal_values and not events:
+                yield _sse("task_complete", {"task_id": str(task_id), "state": task.state})
+                return
+
+            await asyncio.sleep(settings.sse_poll_interval_seconds)
+            since_heartbeat += settings.sse_poll_interval_seconds
+            if since_heartbeat >= settings.sse_heartbeat_seconds:
+                yield _sse("heartbeat", {"task_id": str(task_id)})
+                since_heartbeat = 0.0
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{task_id}/cancel", response_model=TaskResponse)

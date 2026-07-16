@@ -43,6 +43,7 @@ class TaskRepository:
         expected_version: int,
         trace_id: UUID,
         reason: str,
+        details: dict[str, str] | None = None,
     ) -> Task:
         task = await self.get(task_id, for_update=True)
         if task.version != expected_version:
@@ -52,7 +53,7 @@ class TaskRepository:
         task.state = target.value
         task.version += 1
         task.updated_at = datetime.now(UTC)
-        payload = {"reason": reason, "version": task.version}
+        payload = {"reason": reason, "version": task.version, **(details or {})}
         self._session.add(
             TaskEvent(
                 task_id=task.id,
@@ -78,10 +79,25 @@ class TaskRepository:
         task.updated_at = datetime.now(UTC)
         return task
 
+    async def list_tasks(self, *, limit: int, offset: int) -> list[Task]:
+        result = await self._session.scalars(
+            select(Task).order_by(Task.created_at.desc()).limit(limit).offset(offset)
+        )
+        return list(result)
+
     async def timeline(self, task_id: UUID) -> list[TaskEvent]:
         await self.get(task_id)
         result = await self._session.scalars(
             select(TaskEvent).where(TaskEvent.task_id == task_id).order_by(TaskEvent.id)
+        )
+        return list(result)
+
+    async def timeline_after(self, task_id: UUID, *, after: int) -> list[TaskEvent]:
+        await self.get(task_id)
+        result = await self._session.scalars(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == task_id, TaskEvent.id > after)
+            .order_by(TaskEvent.id)
         )
         return list(result)
 

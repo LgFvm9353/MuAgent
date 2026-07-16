@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -10,7 +11,14 @@ from sqlalchemy.ext.asyncio import (
 
 class Database:
     def __init__(self, url: str) -> None:
-        self.engine: AsyncEngine = create_async_engine(url, pool_pre_ping=True)
+        parsed = make_url(url)
+        if parsed.drivername != "mysql+asyncmy":
+            raise ValueError("database URL must use mysql+asyncmy")
+        self.engine: AsyncEngine = create_async_engine(
+            url,
+            pool_pre_ping=True,
+            isolation_level="READ COMMITTED",
+        )
         self.session_factory = async_sessionmaker(
             self.engine,
             class_=AsyncSession,

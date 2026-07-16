@@ -3,13 +3,17 @@ from pathlib import Path
 from uuid import UUID
 
 import anthropic
+import openai
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from app.agents.definitions import build_agent_registry
-from app.agents.runtime import ClaudeAgentRuntime
+from app.agents.runtime import AgentRuntime, StructuredGateway
 from app.config import Settings
+from app.errors import safe_error_summary
 from app.harness.model_gateway import ModelGateway
+from app.harness.openai_gateway import OpenAIModelGateway
+from app.logging import logger
 from app.orchestrator.execution import ExecutionService
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
@@ -30,18 +34,35 @@ class Coordinator:
         self._prompts_root = prompts_root
         self._active: dict[UUID, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
-        self._client = anthropic.AsyncAnthropic(
-            api_key=settings.anthropic_api_key.get_secret_value()
-            if settings.anthropic_api_key
-            else None,
-            max_retries=0,
-            timeout=settings.model_timeout_seconds,
-        )
-        self._gateway = ModelGateway(
-            self._client,
-            concurrency=settings.model_concurrency,
-            timeout_seconds=settings.model_timeout_seconds,
-        )
+        self._client: openai.AsyncOpenAI | anthropic.AsyncAnthropic
+        self._gateway: StructuredGateway
+        if settings.llm_provider == "openai":
+            self._client = openai.AsyncOpenAI(
+                api_key=settings.openai_api_key.get_secret_value()
+                if settings.openai_api_key
+                else None,
+                base_url=settings.openai_base_url,
+                max_retries=0,
+                timeout=settings.model_timeout_seconds,
+            )
+            self._gateway = OpenAIModelGateway(
+                self._client,
+                concurrency=settings.model_concurrency,
+                timeout_seconds=settings.model_timeout_seconds,
+            )
+        else:
+            self._client = anthropic.AsyncAnthropic(
+                api_key=settings.anthropic_api_key.get_secret_value()
+                if settings.anthropic_api_key
+                else None,
+                max_retries=0,
+                timeout=settings.model_timeout_seconds,
+            )
+            self._gateway = ModelGateway(
+                self._client,
+                concurrency=settings.model_concurrency,
+                timeout_seconds=settings.model_timeout_seconds,
+            )
         self._agents = build_agent_registry(settings, prompts_root)
 
     async def schedule(self, task_id: UUID) -> None:
@@ -78,7 +99,7 @@ class Coordinator:
         clear_contextvars()
         bind_contextvars(task_id=str(task_id), trace_id=str(trace_id))
         tools = build_tool_registry(self._settings, str(task_id))
-        runtime = ClaudeAgentRuntime(self._gateway, self._agents, tools)
+        runtime = AgentRuntime(self._gateway, self._agents, tools)
         try:
             state = await self._state(task_id)
             orchestrator = OrchestratorService(self._sessions, runtime, self._agents, tools)
@@ -107,7 +128,14 @@ class Coordinator:
             await self._finish(task_id, TaskState.CANCELLED, "background operation cancelled")
             raise
         except Exception as error:
-            await self._finish(task_id, TaskState.FAILED, type(error).__name__)
+            error_code, message = safe_error_summary(error)
+            logger().exception("task orchestration failed", error_code=error_code)
+            await self._finish(
+                task_id,
+                TaskState.FAILED,
+                error_code,
+                details={"error_code": error_code, "message": message},
+            )
         finally:
             clear_contextvars()
 
@@ -121,7 +149,14 @@ class Coordinator:
             task = await TaskRepository(session).get(task_id)
             return TaskState(task.state)
 
-    async def _finish(self, task_id: UUID, target: TaskState, reason: str) -> None:
+    async def _finish(
+        self,
+        task_id: UUID,
+        target: TaskState,
+        reason: str,
+        *,
+        details: dict[str, str] | None = None,
+    ) -> None:
         async with self._sessions() as session:
             repository = TaskRepository(session)
             try:
@@ -144,6 +179,7 @@ class Coordinator:
                     expected_version=task.version,
                     trace_id=task.trace_id,
                     reason=reason,
+                    details=details,
                 )
             except ValueError:
                 await session.rollback()

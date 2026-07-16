@@ -26,6 +26,9 @@ class TaskService:
     async def get(self, task_id: UUID) -> Task:
         return await self._repository.get(task_id)
 
+    async def list(self, *, limit: int, offset: int) -> list[Task]:
+        return await self._repository.list_tasks(limit=limit, offset=offset)
+
     async def cancel(self, task_id: UUID) -> Task:
         task = await self._repository.request_cancellation(task_id)
         if TaskState(task.state) not in TERMINAL_STATES:

@@ -1,5 +1,7 @@
 import json
-from typing import Any, cast
+from typing import Any, Protocol, cast
+
+from pydantic import BaseModel
 
 from app.contracts.agents import (
     AgentDecision,
@@ -11,16 +13,29 @@ from app.contracts.agents import (
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.context import ContextBuilder
-from app.harness.model_gateway import ModelGateway
+from app.harness.model_gateway import ModelResult
 from app.harness.registry import AgentRegistry
 from app.orchestrator.scheduler import AgentInvocation
 from app.tools.registry import ToolRegistry
 
 
-class ClaudeAgentRuntime:
+class StructuredGateway(Protocol):
+    async def structured(
+        self,
+        *,
+        model: str,
+        system: str,
+        user_content: str,
+        output_model: type[BaseModel],
+        max_tokens: int = 16_000,
+        effort: str = "high",
+    ) -> ModelResult: ...
+
+
+class AgentRuntime:
     def __init__(
         self,
-        gateway: ModelGateway,
+        gateway: StructuredGateway,
         agents: AgentRegistry,
         tools: ToolRegistry,
     ) -> None:
