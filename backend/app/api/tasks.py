@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import database_session
 from app.config import get_settings
 from app.contracts.task import TaskContract
-from app.models import Task, TaskEvent
+from app.models import ConversationMessage, Task, TaskEvent
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskNotFoundError, TaskRepository
 from app.services.tasks import TaskService
@@ -85,6 +85,37 @@ class EventResponse(BaseModel):
     to_state: str | None
     payload: dict[str, Any]
     created_at: datetime
+
+
+class ConversationMessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    task_id: UUID
+    agent_id: str
+    role: str
+    message_type: str
+    phase: str
+    summary: str
+    content: dict[str, Any]
+    source_id: str
+    created_at: datetime
+
+
+@router.get(
+    "/{task_id}/messages",
+    response_model=list[ConversationMessageResponse],
+)
+async def task_messages(
+    task_id: UUID,
+    session: Session,
+    after: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
+) -> Sequence[ConversationMessage]:
+    try:
+        return await TaskRepository(session).messages(task_id, after=after, limit=limit)
+    except TaskNotFoundError as error:
+        raise HTTPException(status_code=404, detail="task not found") from error
 
 
 class AuditResponse(BaseModel):
@@ -167,6 +198,7 @@ async def stream_task_events(
     task_id: UUID,
     request: Request,
     after: Annotated[int, Query(ge=0)] = 0,
+    message_after: Annotated[int, Query(ge=0)] = 0,
 ) -> StreamingResponse:
     async with request.app.state.database.session_factory() as session:
         try:
@@ -178,6 +210,7 @@ async def stream_task_events(
 
     async def generate() -> AsyncIterator[str]:
         cursor = after
+        message_cursor = message_after
         since_heartbeat = 0.0
         terminal_values = {state.value for state in TERMINAL_STATES}
         while not await request.is_disconnected():
@@ -185,12 +218,29 @@ async def stream_task_events(
                 repository = TaskRepository(session)
                 task = await repository.get(task_id)
                 events = await repository.timeline_after(task_id, after=cursor)
+                messages = await repository.messages(task_id, after=message_cursor)
 
-            for event in events:
-                cursor = event.id
-                yield _sse("task_event", _event_data(event), event_id=event.id)
+            stream_items = [
+                (event.created_at, 0, event.id, "task_event", _event_data(event))
+                for event in events
+            ] + [
+                (
+                    message.created_at,
+                    1,
+                    message.id,
+                    "conversation_message",
+                    ConversationMessageResponse.model_validate(message).model_dump(mode="json"),
+                )
+                for message in messages
+            ]
+            for _, _, item_id, event_name, data in sorted(stream_items):
+                if event_name == "task_event":
+                    cursor = item_id
+                else:
+                    message_cursor = item_id
+                yield _sse(event_name, data)
 
-            if task.state in terminal_values and not events:
+            if task.state in terminal_values and not events and not messages:
                 yield _sse("task_complete", {"task_id": str(task_id), "state": task.state})
                 return
 

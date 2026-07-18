@@ -1,15 +1,11 @@
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, cast
+from uuid import uuid4
 
 from pydantic import BaseModel
 
-from app.contracts.agents import (
-    AgentDecision,
-    AgentProposal,
-    Critique,
-    CritiqueSet,
-    VerificationReport,
-)
+from app.contracts.agents import AgentProposal, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.context import ContextBuilder
@@ -38,10 +34,12 @@ class AgentRuntime:
         gateway: StructuredGateway,
         agents: AgentRegistry,
         tools: ToolRegistry,
+        message_sink: Callable[[AgentInvocation], Awaitable[None]] | None = None,
     ) -> None:
         self._gateway = gateway
         self._agents = agents
         self._tools = tools
+        self._message_sink = message_sink
         self._context = ContextBuilder()
         self._invocations: list[AgentInvocation] = []
 
@@ -55,70 +53,29 @@ class AgentRuntime:
             AgentProposal, await self._call("analyst", self._context.analyst(task), AgentProposal)
         )
 
-    async def domain_expert(self, task: TaskContract) -> AgentProposal:
-        catalog = self._tools.catalog(task.allowed_tools)
-        return cast(
-            AgentProposal,
-            await self._call(
-                "domain_expert", self._context.domain_expert(task, catalog), AgentProposal
-            ),
-        )
-
-    async def revise(
-        self,
-        agent_id: str,
-        task: TaskContract,
-        proposal: AgentProposal,
-        feedback: tuple[str, ...],
-    ) -> AgentProposal:
-        if agent_id not in {"analyst", "domain_expert"}:
-            raise ValueError("only proposal agents can revise")
-        context = {
-            "task": self._context.analyst(task),
-            "previous_proposal": proposal.model_dump(mode="json"),
-            "required_revisions": feedback,
-            "instruction": "Revise only the disputed points without expanding scope.",
-        }
-        return cast(AgentProposal, await self._call(agent_id, context, AgentProposal))
-
-    async def critic(
-        self, task: TaskContract, proposals: tuple[AgentProposal, ...]
-    ) -> tuple[Critique, ...]:
-        context = self._context.critic(
-            task, tuple(item.model_dump(mode="json") for item in proposals)
-        )
-        result = cast(CritiqueSet, await self._call("critic", context, CritiqueSet))
-        return result.critiques
-
-    async def judge(
+    async def planner(
         self,
         task: TaskContract,
-        proposals: tuple[AgentProposal, ...],
-        critiques: tuple[Critique, ...],
-    ) -> AgentDecision:
-        del task
-        context = self._context.judge(
-            tuple(item.model_dump(mode="json") for item in proposals),
-            tuple(item.model_dump(mode="json") for item in critiques),
-        )
-        return cast(AgentDecision, await self._call("judge", context, AgentDecision))
-
-    async def planner(self, task: TaskContract, decision: AgentDecision) -> ExecutionPlan:
+        analysis: AgentProposal,
+        workspace_files: frozenset[str] = frozenset(),
+    ) -> ExecutionPlan:
         context = self._context.planner(
-            decision.model_dump(mode="json"), self._tools.catalog(task.allowed_tools)
+            task,
+            analysis.model_dump(mode="json"),
+            self._tools.catalog(task.allowed_tools),
+            workspace_files,
         )
         return cast(ExecutionPlan, await self._call("planner", context, ExecutionPlan))
 
     async def replanner(
         self,
         task: TaskContract,
-        decision: AgentDecision,
         prior_plan: ExecutionPlan,
         verification: VerificationReport,
         evidence: tuple[dict[str, Any], ...],
     ) -> ExecutionPlan:
         context = self._context.replanner(
-            decision.model_dump(mode="json"),
+            task,
             prior_plan.model_dump(mode="json"),
             verification.model_dump(mode="json"),
             evidence,
@@ -140,8 +97,6 @@ class AgentRuntime:
         agent_id: str,
         context: dict[str, Any],
         output_model: type[AgentProposal]
-        | type[CritiqueSet]
-        | type[AgentDecision]
         | type[ExecutionPlan]
         | type[VerificationReport],
     ) -> object:
@@ -154,11 +109,19 @@ class AgentRuntime:
         )
         if result.parsed_output is None:
             raise RuntimeError(f"agent returned no structured output: {agent_id}")
-        self._invocations.append(
-            AgentInvocation(
-                agent_id=agent_id,
-                output=result.parsed_output.model_dump(mode="json"),
-                usage=result.usage,
-            )
+        invocation = AgentInvocation(
+            agent_id=agent_id,
+            output=result.parsed_output.model_dump(mode="json"),
+            usage=result.usage,
+            source_id=str(uuid4()),
+            phase={
+                "analyst": "analysis",
+                "planner": "planning",
+                "verifier": "verification",
+            }.get(agent_id, "discussion"),
+            message_type="agent_message",
         )
+        self._invocations.append(invocation)
+        if self._message_sink is not None:
+            await self._message_sink(invocation)
         return result.parsed_output

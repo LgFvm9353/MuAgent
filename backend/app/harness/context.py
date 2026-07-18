@@ -13,41 +13,33 @@ class ContextBuilder:
             "denied_tools": sorted(task.denied_tools),
         }
 
-    def domain_expert(
-        self, task: TaskContract, tool_catalog: tuple[dict[str, Any], ...]
+    def planner(
+        self,
+        task: TaskContract,
+        analysis: dict[str, Any],
+        tool_catalog: tuple[dict[str, Any], ...],
+        workspace_files: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         return {
-            "goal": task.goal,
-            "constraints": task.constraints,
-            "acceptance_criteria": [
-                item.model_dump(mode="json") for item in task.acceptance_criteria
-            ],
+            "task": task.model_dump(mode="json"),
+            "analysis": analysis,
             "tool_catalog": tool_catalog,
+            "workspace": {
+                "empty": not workspace_files,
+                "files": sorted(workspace_files),
+            },
         }
-
-    def critic(self, task: TaskContract, proposals: tuple[dict[str, Any], ...]) -> dict[str, Any]:
-        return {"constraints": task.constraints, "proposals": proposals}
-
-    def judge(
-        self, proposals: tuple[dict[str, Any], ...], critiques: tuple[dict[str, Any], ...]
-    ) -> dict[str, Any]:
-        return {"proposals": proposals, "critiques": critiques}
-
-    def planner(
-        self, decision: dict[str, Any], tool_catalog: tuple[dict[str, Any], ...]
-    ) -> dict[str, Any]:
-        return {"approved_decision": decision, "tool_catalog": tool_catalog}
 
     def replanner(
         self,
-        decision: dict[str, Any],
+        task: TaskContract,
         prior_plan: dict[str, Any],
         verification: dict[str, Any],
         evidence: tuple[dict[str, Any], ...],
         tool_catalog: tuple[dict[str, Any], ...],
     ) -> dict[str, Any]:
         return {
-            "approved_decision": decision,
+            "task": task.model_dump(mode="json"),
             "prior_plan": prior_plan,
             "verification_failure": verification,
             "evidence": evidence,

@@ -3,7 +3,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.contracts.agents import AgentDecision, AgentProposal, CritiqueSet, VerificationReport
+from app.contracts.agents import AgentProposal, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.harness.registry import AgentDefinition, AgentRegistry
 
@@ -14,11 +14,12 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
         role: str,
         prompt: str,
         output_model: type[BaseModel],
+        model: str,
     ) -> AgentDefinition:
         return AgentDefinition(
             agent_id=agent_id,
             role=role,
-            model=settings.model_name,
+            model=model,
             prompt_path=prompts_root / prompt,
             prompt_version="v1",
             schema_version="v1",
@@ -30,21 +31,26 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
 
     return AgentRegistry(
         (
-            definition("analyst", "task analysis", "analyst/v1.txt", AgentProposal),
             definition(
-                "domain_expert",
-                "domain proposal",
-                "domain_expert/v1.txt",
+                "analyst",
+                "task analysis",
+                "analyst/v1.txt",
                 AgentProposal,
+                settings.agent_model("analyst"),
             ),
-            definition("critic", "cross review", "critic/v1.txt", CritiqueSet),
-            definition("judge", "independent decision", "judge/v1.txt", AgentDecision),
-            definition("planner", "execution planning", "planner/v1.txt", ExecutionPlan),
+            definition(
+                "planner",
+                "execution planning",
+                "planner/v1.txt",
+                ExecutionPlan,
+                settings.agent_model("planner"),
+            ),
             definition(
                 "verifier",
                 "independent verification",
                 "verifier/v1.txt",
                 VerificationReport,
+                settings.agent_model("verifier"),
             ),
         )
     )

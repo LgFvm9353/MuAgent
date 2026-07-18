@@ -71,15 +71,24 @@ class AgentRun(Base, TimestampMixin):
     error_type: Mapped[str | None] = mapped_column(String(100))
 
 
-class DeliberationRound(Base, TimestampMixin):
-    __tablename__ = "deliberation_rounds"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
+class ConversationMessage(Base, TimestampMixin):
+    __tablename__ = "conversation_messages"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
-    round_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    new_information: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="agent")
+    message_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    phase: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(String(1000), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_id: Mapped[str] = mapped_column(String(100), nullable=False)
     __table_args__ = (
-        UniqueConstraint("task_id", "round_number"),
-        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+        UniqueConstraint("task_id", "source_id"),
+        {
+            "mysql_engine": "InnoDB",
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_unicode_ci",
+        },
     )
 
 
@@ -92,24 +101,11 @@ class Proposal(Base, TimestampMixin):
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
-class Decision(Base, TimestampMixin):
-    __tablename__ = "decisions"
-    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    __table_args__ = (
-        UniqueConstraint("task_id", "version"),
-        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
-    )
-
-
 class ExecutionPlanRecord(Base, TimestampMixin):
     __tablename__ = "execution_plans"
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True)
     task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
-    decision_id: Mapped[UUID] = mapped_column(ForeignKey("decisions.id"))
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     __table_args__ = (
         UniqueConstraint("task_id", "version"),

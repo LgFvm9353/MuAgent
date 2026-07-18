@@ -31,6 +31,13 @@ class ToolDefinition[InputT: BaseModel, OutputT: BaseModel]:
             "strict": True,
         }
 
+    def planning_schema(self) -> dict[str, Any]:
+        return {
+            **self.anthropic_schema(),
+            "risk": self.risk.value,
+            "idempotent": self.idempotent,
+        }
+
 
 class UnknownToolError(LookupError):
     pass
@@ -52,4 +59,4 @@ class ToolRegistry:
             raise UnknownToolError(name) from error
 
     def catalog(self, allowed: frozenset[str]) -> tuple[dict[str, Any], ...]:
-        return tuple(self._tools[name].anthropic_schema() for name in sorted(allowed))
+        return tuple(self._tools[name].planning_schema() for name in sorted(allowed))

@@ -28,10 +28,9 @@ def estimate_cost(
     cache_creation_input_tokens: int = 0,
     cache_read_input_tokens: int = 0,
 ) -> Decimal:
-    try:
-        price = PRICES[model]
-    except KeyError as error:
-        raise ValueError(f"no price configured for model: {model}") from error
+    price = PRICES.get(model)
+    if price is None:
+        return Decimal(0)
     million = Decimal(1_000_000)
     return (
         Decimal(input_tokens) * price.input_per_million

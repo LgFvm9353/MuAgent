@@ -38,7 +38,7 @@ class OpenAIModelGateway:
         system: str,
         user_content: str,
         output_model: type[OutputT],
-        max_tokens: int = 16_000,
+        max_tokens: int = 4_096,
         effort: str = "high",
     ) -> ModelResult:
         del effort

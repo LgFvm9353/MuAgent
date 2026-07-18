@@ -1,4 +1,5 @@
 from app.harness.model_gateway import ModelGatewayError
+from app.harness.validation import SemanticValidationError
 
 _SAFE_MESSAGES = {
     "authentication_failed": "模型服务认证失败，请检查 API Key。",  # noqa: RUF001
@@ -10,12 +11,15 @@ _SAFE_MESSAGES = {
     "invalid_structured_output": "模型返回的结构化结果不符合要求。",
     "invalid_provider_request": "模型服务不支持当前请求参数。",
     "invalid_tool_call": "模型返回了无效的工具调用。",
+    "WorkspacePreconditionError": "任务工作目录当前不可用，请检查任务文件后重试。",  # noqa: RUF001
 }
 
 
 def safe_error_summary(error: BaseException) -> tuple[str, str]:
     leaves = _leaves(error)
     selected = next((item for item in leaves if isinstance(item, ModelGatewayError)), leaves[0])
+    if isinstance(selected, SemanticValidationError):
+        return "SemanticValidationError", f"计划校验失败: {selected}"
     code = (
         str(selected)
         if isinstance(selected, ModelGatewayError) and str(selected)

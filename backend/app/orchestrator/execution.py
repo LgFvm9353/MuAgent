@@ -10,6 +10,7 @@ from app.harness.pricing import estimate_cost
 from app.harness.registry import AgentRegistry
 from app.models import (
     AgentRun,
+    ConversationMessage,
     EvidenceRecordModel,
     ExecutionPlanRecord,
     ExecutionStepRecord,
@@ -22,6 +23,8 @@ from app.orchestrator.scheduler import AgentRuntime
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
 from app.tools.executor import ToolExecutor, idempotency_key
+from app.workspace.paths import WorkspaceViolationError
+from app.workspace.task_directory import WorkspacePreconditionError
 
 
 class ExecutionService:
@@ -233,6 +236,10 @@ class ExecutionService:
         try:
             execution = await self._executor.execute(task_id, plan_version, step)
         except Exception as error:
+            is_precondition = isinstance(
+                error,
+                (NotADirectoryError, WorkspaceViolationError),
+            )
             async with self._sessions() as session:
                 failed_call = await session.scalar(
                     select(ToolCall).where(ToolCall.idempotency_key == key).with_for_update()
@@ -243,7 +250,33 @@ class ExecutionService:
                     step_record = await session.get(ExecutionStepRecord, failed_call.step_id)
                     if step_record is not None:
                         step_record.status = "failed"
+                    session.add(
+                        ConversationMessage(
+                            task_id=task_id,
+                            agent_id="executor",
+                            role="tool",
+                            message_type="tool_failed",
+                            phase="execution",
+                            summary=f"{step.tool_name} 无法执行。项目状态不符合计划。"
+                            if is_precondition
+                            else f"{step.tool_name} 执行失败。",
+                            content={
+                                "step_id": step.step_id,
+                                "tool_name": step.tool_name,
+                                "risk": step.risk,
+                                "error_code": type(error).__name__,
+                                "action": "请检查任务文件及计划前置条件后重试。"
+                                if is_precondition
+                                else "请查看任务错误信息。",
+                            },
+                            source_id=f"tool-call-failed:{key}",
+                        )
+                    )
                     await session.commit()
+            if is_precondition:
+                raise WorkspacePreconditionError(
+                    "workspace does not satisfy the execution plan"
+                ) from error
             raise
         result = execution.output.model_dump(mode="json")
         async with self._sessions() as session:
@@ -266,6 +299,24 @@ class ExecutionService:
                     kind=evidence.kind,
                     content=evidence.model_dump(mode="json"),
                     sha256=evidence.sha256,
+                )
+            )
+            session.add(
+                ConversationMessage(
+                    task_id=task_id,
+                    agent_id="executor",
+                    role="tool",
+                    message_type="tool_result",
+                    phase="execution",
+                    summary=f"{step.tool_name} 执行完成。",
+                    content={
+                        "step_id": step.step_id,
+                        "tool_name": step.tool_name,
+                        "risk": step.risk,
+                        "result": result,
+                        "evidence": evidence.model_dump(mode="json"),
+                    },
+                    source_id=f"tool-call:{key}",
                 )
             )
             await session.commit()

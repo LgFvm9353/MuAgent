@@ -1,4 +1,4 @@
-import type { Task, TaskContract, TaskEvent } from '../types/api'
+import type { ConversationMessage, PendingConfirmation, Task, TaskContract, TaskEvent } from '../types/api'
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -62,6 +62,31 @@ export function getTaskEvents(taskId: string): Promise<TaskEvent[]> {
   return request(`/tasks/${taskId}/events`)
 }
 
+export function getTaskMessages(taskId: string): Promise<ConversationMessage[]> {
+  return request(`/tasks/${taskId}/messages?after=0&limit=500`)
+}
+
+export function getPendingConfirmations(taskId: string): Promise<PendingConfirmation[]> {
+  return request(`/tasks/${taskId}/confirmations/pending`)
+}
+
+export function decideConfirmation(
+  taskId: string,
+  confirmation: PendingConfirmation,
+  approved: boolean,
+): Promise<unknown> {
+  return request(`/tasks/${taskId}/confirmations`, {
+    method: 'POST',
+    body: JSON.stringify({
+      plan_id: confirmation.plan_id,
+      plan_version: confirmation.plan_version,
+      call_hash: confirmation.call_hash,
+      approved,
+      decided_by: 'local-user',
+    }),
+  })
+}
+
 export function buildTaskContract(goal: string): TaskContract {
   const taskId = crypto.randomUUID()
   return {
@@ -81,7 +106,6 @@ export function buildTaskContract(goal: string): TaskContract {
       'run_allowlisted_check',
     ],
     denied_tools: [],
-    workspace_relative: `tasks/${taskId}`,
     failure_policy: '遇到不可恢复错误时停止执行并报告原因',
   }
 }

@@ -3,6 +3,7 @@ from pathlib import Path
 from uuid import UUID
 
 import anthropic
+import httpx
 import openai
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from structlog.contextvars import bind_contextvars, clear_contextvars
@@ -10,16 +11,23 @@ from structlog.contextvars import bind_contextvars, clear_contextvars
 from app.agents.definitions import build_agent_registry
 from app.agents.runtime import AgentRuntime, StructuredGateway
 from app.config import Settings
+from app.contracts.task import TaskContract
 from app.errors import safe_error_summary
 from app.harness.model_gateway import ModelGateway
 from app.harness.openai_gateway import OpenAIModelGateway
 from app.logging import logger
+from app.models import ConversationMessage
 from app.orchestrator.execution import ExecutionService
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskNotFoundError, TaskRepository
+from app.services.conversation import ConversationService
 from app.tools.executor import ToolExecutor
 from app.tools.factory import build_tool_registry
+from app.workspace.task_directory import (
+    WorkspacePreconditionError,
+    ensure_task_directory,
+)
 
 
 class Coordinator:
@@ -44,6 +52,7 @@ class Coordinator:
                 base_url=settings.openai_base_url,
                 max_retries=0,
                 timeout=settings.model_timeout_seconds,
+                http_client=httpx.AsyncClient(trust_env=False),
             )
             self._gateway = OpenAIModelGateway(
                 self._client,
@@ -98,13 +107,25 @@ class Coordinator:
         trace_id = await self._trace_id(task_id)
         clear_contextvars()
         bind_contextvars(task_id=str(task_id), trace_id=str(trace_id))
-        tools = build_tool_registry(self._settings, str(task_id))
-        runtime = AgentRuntime(self._gateway, self._agents, tools)
         try:
+            await self._contract(task_id)
+            workspace_root = ensure_task_directory(self._settings.workspace_root, task_id)
+            workspace_files = frozenset(
+                path.relative_to(workspace_root).as_posix()
+                for path in workspace_root.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            )
+            tools = build_tool_registry(self._settings, workspace_root)
+            runtime = AgentRuntime(
+                self._gateway,
+                self._agents,
+                tools,
+                ConversationService(self._sessions).sink(task_id),
+            )
             state = await self._state(task_id)
             orchestrator = OrchestratorService(self._sessions, runtime, self._agents, tools)
             if state is TaskState.PENDING:
-                await orchestrator.run(task_id)
+                await orchestrator.run(task_id, workspace_files)
                 state = await self._state(task_id)
             if state is TaskState.EXECUTING:
                 await ExecutionService(
@@ -124,12 +145,25 @@ class Coordinator:
                         self._agents,
                         ToolExecutor(tools),
                     ).execute(task_id)
+        except WorkspacePreconditionError as error:
+            error_code, message = safe_error_summary(error)
+            logger().warning("task needs workspace review", error_code=error_code)
+            await self._finish(
+                task_id,
+                TaskState.NEEDS_REVIEW,
+                error_code,
+                details={"error_code": error_code, "message": message},
+            )
         except asyncio.CancelledError:
             await self._finish(task_id, TaskState.CANCELLED, "background operation cancelled")
             raise
         except Exception as error:
             error_code, message = safe_error_summary(error)
-            logger().exception("task orchestration failed", error_code=error_code)
+            logger().exception(
+                "task orchestration failed",
+                error_code=error_code,
+                error_message=message,
+            )
             await self._finish(
                 task_id,
                 TaskState.FAILED,
@@ -138,6 +172,11 @@ class Coordinator:
             )
         finally:
             clear_contextvars()
+
+    async def _contract(self, task_id: UUID) -> TaskContract:
+        async with self._sessions() as session:
+            task = await TaskRepository(session).get(task_id)
+            return TaskContract.model_validate(task.contract)
 
     async def _trace_id(self, task_id: UUID) -> UUID:
         async with self._sessions() as session:
@@ -184,4 +223,28 @@ class Coordinator:
             except ValueError:
                 await session.rollback()
                 return
+            if target in {
+                TaskState.NEEDS_REVIEW,
+                TaskState.FAILED,
+                TaskState.REJECTED,
+                TaskState.BUDGET_EXCEEDED,
+            }:
+                message = (details or {}).get("message", reason)
+                session.add(
+                    ConversationMessage(
+                        task_id=task_id,
+                        agent_id="system",
+                        role="system",
+                        message_type="terminal_result",
+                        phase="completion",
+                        summary=message[:1000],
+                        content={
+                            "state": target.value,
+                            "reason": reason,
+                            "details": details or {},
+                            "action": "请根据错误详情调整任务输入后重试。",
+                        },
+                        source_id=f"terminal-result:{target.value}:{task.version + 1}",
+                    )
+                )
             await session.commit()

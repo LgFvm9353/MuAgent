@@ -3,7 +3,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.contracts.agents import AgentDecision, VerificationReport
+from app.contracts.agents import VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.pricing import estimate_cost
@@ -11,8 +11,6 @@ from app.harness.registry import AgentRegistry
 from app.harness.validation import validate_plan
 from app.models import (
     AgentRun,
-    Decision,
-    DeliberationRound,
     EvidenceRecordModel,
     ExecutionPlanRecord,
     ExecutionStepRecord,
@@ -41,7 +39,11 @@ class OrchestratorService:
         self._tools = tools
         self._scheduler = Scheduler(runtime)
 
-    async def run(self, task_id: UUID) -> None:
+    async def run(
+        self,
+        task_id: UUID,
+        workspace_files: frozenset[str] = frozenset(),
+    ) -> None:
         async with self._sessions() as session:
             repository = TaskRepository(session)
             task = await repository.get(task_id)
@@ -65,26 +67,12 @@ class OrchestratorService:
             )
             await session.commit()
 
-        result = await self._scheduler.deliberate(contract)
+        result = await self._scheduler.deliberate(contract, workspace_files)
 
         async with self._sessions() as session:
             repository = TaskRepository(session)
             task = await repository.get(task_id, for_update=True)
             invocations = self._runtime.drain_invocations()
-            for round_number, _ in enumerate(
-                (item for item in invocations if item.agent_id == "critic"),
-                start=1,
-            ):
-                session.add(
-                    DeliberationRound(
-                        task_id=task_id,
-                        round_number=round_number,
-                        new_information=True,
-                    )
-                )
-            proposal_by_agent = dict(
-                zip(("analyst", "domain_expert"), result.proposals, strict=True)
-            )
             total_tokens = 0
             total_cost = 0.0
             for invocation in invocations:
@@ -129,14 +117,13 @@ class OrchestratorService:
                         estimated_cost_usd=estimated_cost,
                     )
                 )
-                proposal = proposal_by_agent.get(invocation.agent_id)
-                if proposal is not None:
+                if invocation.agent_id == "analyst":
                     session.add(
                         Proposal(
                             task_id=task_id,
                             agent_run_id=run.id,
                             version=1,
-                            content=proposal.model_dump(mode="json"),
+                            content=result.analysis.model_dump(mode="json"),
                         )
                     )
             if (
@@ -154,35 +141,23 @@ class OrchestratorService:
                 return
             await repository.transition(
                 task_id,
-                TaskState.DECIDING,
-                expected_version=task.version,
-                trace_id=task.trace_id,
-                reason="analysis and critique completed",
-            )
-            await session.flush()
-            task = await repository.get(task_id, for_update=True)
-            decision = Decision(
-                task_id=task_id,
-                version=1,
-                content=result.decision.model_dump(mode="json"),
-            )
-            session.add(decision)
-            await session.flush()
-            await repository.transition(
-                task_id,
                 TaskState.PLANNING,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason="judge approved planning",
+                reason="analysis completed",
             )
             await session.flush()
             task = await repository.get(task_id, for_update=True)
-            validate_plan(result.plan, contract, self._tools)
+            validate_plan(
+                result.plan,
+                contract,
+                self._tools,
+                workspace_files=workspace_files,
+            )
             plan = ExecutionPlanRecord(
                 id=result.plan.plan_id,
                 task_id=task_id,
                 version=result.plan.version,
-                decision_id=decision.id,
                 content=result.plan.model_dump(mode="json"),
             )
             session.add(plan)
@@ -230,14 +205,8 @@ class OrchestratorService:
                 .order_by(ExecutionPlanRecord.version.desc())
                 .limit(1)
             )
-            decision_record = await session.scalar(
-                select(Decision)
-                .where(Decision.task_id == task_id)
-                .order_by(Decision.version.desc())
-                .limit(1)
-            )
-            if current_plan is None or decision_record is None:
-                raise RuntimeError("replanning requires a prior plan and decision")
+            if current_plan is None:
+                raise RuntimeError("replanning requires a prior plan")
             if current_plan.version >= 1 + contract.budget.max_revisions:
                 await repository.transition(
                     task_id,
@@ -266,16 +235,13 @@ class OrchestratorService:
                     .order_by(EvidenceRecordModel.created_at)
                 )
             )
-            decision = AgentDecision.model_validate(decision_record.content)
             prior_plan = ExecutionPlan.model_validate(current_plan.content)
             verification = VerificationReport.model_validate(verification_record.content)
             evidence = tuple(record.content for record in evidence_records)
             next_version = current_plan.version + 1
-            decision_id = decision_record.id
 
         new_plan = await self._runtime.replanner(
             contract,
-            decision,
             prior_plan,
             verification,
             evidence,
@@ -290,7 +256,6 @@ class OrchestratorService:
                 id=new_plan.plan_id,
                 task_id=task_id,
                 version=new_plan.version,
-                decision_id=decision_id,
                 content=new_plan.model_dump(mode="json"),
             )
             session.add(plan_record)

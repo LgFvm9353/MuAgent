@@ -21,10 +21,8 @@ from app.tools.registry import ToolDefinition, ToolRegistry
 from app.workspace.paths import Workspace
 
 
-def build_tool_registry(settings: Settings, task_id: str) -> ToolRegistry:
-    root = settings.workspace_root / task_id
-    root.mkdir(parents=True, exist_ok=True)
-    workspace = Workspace(root)
+def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistry:
+    workspace = Workspace(workspace_root)
     files = FileTools(workspace)
     checks = CheckCommandTool(
         workspace,

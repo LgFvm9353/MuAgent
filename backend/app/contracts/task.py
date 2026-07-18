@@ -1,8 +1,7 @@
 from enum import StrEnum
-from pathlib import PurePosixPath
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from app.contracts.base import ContractModel
 
@@ -19,7 +18,6 @@ class AcceptanceCriterion(ContractModel):
 
 
 class BudgetLimits(ContractModel):
-    max_deliberation_rounds: int = Field(default=3, ge=1, le=3)
     max_revisions: int = Field(default=2, ge=0, le=2)
     max_execution_steps: int = Field(default=20, ge=1, le=100)
     max_runtime_seconds: int = Field(default=3600, ge=1)
@@ -36,13 +34,4 @@ class TaskContract(ContractModel):
     allowed_tools: frozenset[str]
     denied_tools: frozenset[str] = frozenset()
     budget: BudgetLimits = BudgetLimits()
-    workspace_relative: str
     failure_policy: str = Field(min_length=1)
-
-    @field_validator("workspace_relative")
-    @classmethod
-    def validate_workspace(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if path.is_absolute() or ".." in path.parts or value in {"", "."}:
-            raise ValueError("workspace path must be safe and relative")
-        return value

@@ -54,16 +54,21 @@ CREATE TABLE IF NOT EXISTS `agent_runs` (
         FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `deliberation_rounds` (
-    `id` CHAR(32) NOT NULL,
+CREATE TABLE IF NOT EXISTS `conversation_messages` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
     `task_id` CHAR(32) NOT NULL,
-    `round_number` INT NOT NULL,
-    `new_information` BOOLEAN NOT NULL,
+    `agent_id` VARCHAR(100) NOT NULL,
+    `role` VARCHAR(32) NOT NULL,
+    `message_type` VARCHAR(64) NOT NULL,
+    `phase` VARCHAR(64) NOT NULL,
+    `summary` VARCHAR(1000) NOT NULL,
+    `content` JSON NOT NULL,
+    `source_id` VARCHAR(100) NOT NULL,
     `created_at` DATETIME(6) NOT NULL,
     PRIMARY KEY (`id`),
-    UNIQUE KEY `uq_deliberation_rounds_task_round` (`task_id`, `round_number`),
-    KEY `ix_deliberation_rounds_task_id` (`task_id`),
-    CONSTRAINT `fk_deliberation_rounds_task_id`
+    UNIQUE KEY `uq_conversation_messages_task_source` (`task_id`, `source_id`),
+    KEY `ix_conversation_messages_task_id` (`task_id`),
+    CONSTRAINT `fk_conversation_messages_task_id`
         FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -83,34 +88,17 @@ CREATE TABLE IF NOT EXISTS `proposals` (
         FOREIGN KEY (`agent_run_id`) REFERENCES `agent_runs` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `decisions` (
-    `id` CHAR(32) NOT NULL,
-    `task_id` CHAR(32) NOT NULL,
-    `version` INT NOT NULL,
-    `content` JSON NOT NULL,
-    `created_at` DATETIME(6) NOT NULL,
-    PRIMARY KEY (`id`),
-    UNIQUE KEY `uq_decisions_task_version` (`task_id`, `version`),
-    KEY `ix_decisions_task_id` (`task_id`),
-    CONSTRAINT `fk_decisions_task_id`
-        FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS `execution_plans` (
     `id` CHAR(32) NOT NULL,
     `task_id` CHAR(32) NOT NULL,
     `version` INT NOT NULL,
-    `decision_id` CHAR(32) NOT NULL,
     `content` JSON NOT NULL,
     `created_at` DATETIME(6) NOT NULL,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uq_execution_plans_task_version` (`task_id`, `version`),
     KEY `ix_execution_plans_task_id` (`task_id`),
-    KEY `ix_execution_plans_decision_id` (`decision_id`),
     CONSTRAINT `fk_execution_plans_task_id`
-        FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_execution_plans_decision_id`
-        FOREIGN KEY (`decision_id`) REFERENCES `decisions` (`id`)
+        FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `execution_steps` (

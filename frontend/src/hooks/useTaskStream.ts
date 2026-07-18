@@ -1,20 +1,22 @@
 import { useEffect, useRef, useState } from 'react'
 import { API_BASE_URL } from '../lib/api'
-import type { StreamStatus, TaskEvent } from '../types/api'
+import type { ConversationMessage, StreamStatus, TaskEvent } from '../types/api'
 
 interface Options {
   taskId: string | null
   after: number
+  messageAfter: number
   active: boolean
   onEvent: (event: TaskEvent) => void
+  onMessage: (message: ConversationMessage) => void
   onComplete: () => void
   onWarning: () => void
 }
 
-export function useTaskStream({ taskId, after, active, onEvent, onComplete, onWarning }: Options): StreamStatus {
+export function useTaskStream({ taskId, after, messageAfter, active, onEvent, onMessage, onComplete, onWarning }: Options): StreamStatus {
   const [status, setStatus] = useState<StreamStatus>('idle')
-  const handlers = useRef({ onEvent, onComplete, onWarning })
-  handlers.current = { onEvent, onComplete, onWarning }
+  const handlers = useRef({ onEvent, onMessage, onComplete, onWarning })
+  handlers.current = { onEvent, onMessage, onComplete, onWarning }
 
   useEffect(() => {
     if (!taskId || !active) {
@@ -24,7 +26,7 @@ export function useTaskStream({ taskId, after, active, onEvent, onComplete, onWa
 
     let warned = false
     setStatus('connecting')
-    const source = new EventSource(`${API_BASE_URL}/tasks/${taskId}/stream?after=${after}`)
+    const source = new EventSource(`${API_BASE_URL}/tasks/${taskId}/stream?after=${after}&message_after=${messageAfter}`)
 
     source.onopen = () => {
       warned = false
@@ -33,6 +35,10 @@ export function useTaskStream({ taskId, after, active, onEvent, onComplete, onWa
     source.addEventListener('task_event', (message) => {
       const event = JSON.parse((message as MessageEvent<string>).data) as TaskEvent
       handlers.current.onEvent(event)
+    })
+    source.addEventListener('conversation_message', (event) => {
+      const message = JSON.parse((event as MessageEvent<string>).data) as ConversationMessage
+      handlers.current.onMessage(message)
     })
     source.addEventListener('task_complete', () => {
       setStatus('closed')

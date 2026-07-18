@@ -4,7 +4,6 @@ from enum import StrEnum
 class TaskState(StrEnum):
     PENDING = "PENDING"
     ANALYZING = "ANALYZING"
-    DECIDING = "DECIDING"
     PLANNING = "PLANNING"
     POLICY_CHECK = "POLICY_CHECK"
     WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
@@ -41,18 +40,8 @@ _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     ),
     TaskState.ANALYZING: frozenset(
         {
-            TaskState.DECIDING,
-            TaskState.NEEDS_REVIEW,
-            TaskState.FAILED,
-            TaskState.CANCELLED,
-            TaskState.BUDGET_EXCEEDED,
-        }
-    ),
-    TaskState.DECIDING: frozenset(
-        {
             TaskState.PLANNING,
             TaskState.NEEDS_REVIEW,
-            TaskState.REJECTED,
             TaskState.FAILED,
             TaskState.CANCELLED,
             TaskState.BUDGET_EXCEEDED,

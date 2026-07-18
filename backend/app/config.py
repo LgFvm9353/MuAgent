@@ -1,9 +1,11 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+AgentId = Literal["analyst", "planner", "verifier"]
 
 
 class Settings(BaseSettings):
@@ -16,6 +18,9 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_base_url: str = "https://api-slb.krill-ai.com/codex/v1"
     openai_model: str = "gpt-5.6-sol"
+    analyst_model: str | None = None
+    planner_model: str | None = None
+    verifier_model: str | None = None
     workspace_root: Path = Path("data/workspaces")
     artifacts_root: Path = Path("data/artifacts")
     model_concurrency: int = Field(default=4, ge=1, le=32)
@@ -29,6 +34,21 @@ class Settings(BaseSettings):
     @property
     def model_name(self) -> str:
         return self.openai_model if self.llm_provider == "openai" else self.anthropic_model
+
+    def agent_model(self, agent_id: AgentId) -> str:
+        field_by_agent: dict[AgentId, str] = {
+            "analyst": "analyst_model",
+            "planner": "planner_model",
+            "verifier": "verifier_model",
+        }
+        try:
+            field_name = field_by_agent[agent_id]
+        except KeyError as error:
+            raise ValueError(f"unknown agent ID: {agent_id}") from error
+        configured = cast(str | None, getattr(self, field_name))
+        if configured is not None and configured.strip():
+            return configured.strip()
+        return self.model_name
 
     @model_validator(mode="after")
     def validate_provider(self) -> "Settings":

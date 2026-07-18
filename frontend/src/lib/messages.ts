@@ -1,4 +1,4 @@
-import type { ChatMessage, TaskEvent, TaskState } from '../types/api'
+import type { ChatMessage, ConversationMessage, TaskEvent, TaskState } from '../types/api'
 
 const stateCopy: Record<TaskState, { content: string; tone?: ChatMessage['tone'] }> = {
   PENDING: { content: '任务已进入队列，等待 Agent 接手。' },
@@ -16,6 +16,28 @@ const stateCopy: Record<TaskState, { content: string; tone?: ChatMessage['tone']
   CANCELLED: { content: '任务已取消。', tone: 'warning' },
   REJECTED: { content: '任务因策略限制被拒绝。', tone: 'error' },
   BUDGET_EXCEEDED: { content: '任务已达到预算上限。', tone: 'error' },
+}
+
+export function conversationToMessage(message: ConversationMessage): ChatMessage {
+  const labels: Record<string, string> = {
+    analyst: 'Analyst · 任务分析',
+    domain_expert: 'Domain Expert · 领域方案',
+    critic: 'Critic · 交叉审查',
+    judge: 'Judge · 最终裁决',
+    planner: 'Planner · 执行计划',
+    verifier: 'Verifier · 独立验证',
+    executor: 'Executor · 工具执行',
+  }
+  return {
+    id: `message-${message.id}`,
+    role: 'agent',
+    title: labels[message.agent_id] || message.agent_id,
+    content: message.summary,
+    createdAt: message.created_at,
+    details: message.content,
+    agentId: message.agent_id,
+    phase: message.phase,
+  }
 }
 
 export function eventToMessage(event: TaskEvent): ChatMessage {
