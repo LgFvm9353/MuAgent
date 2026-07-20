@@ -22,7 +22,7 @@ from app.orchestrator.state_machine import TaskState
 
 class Base(DeclarativeBase):
     @declared_attr.directive
-    def __table_args__(cls) -> dict[str, str]:
+    def __table_args__(cls) -> Any:
         return {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"}
 
 

@@ -5,7 +5,7 @@ from typing import Literal, cast
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-AgentId = Literal["analyst", "planner", "verifier"]
+AgentId = Literal["architect", "architect_planner", "reviewer", "designer", "verifier"]
 
 
 class Settings(BaseSettings):
@@ -18,8 +18,9 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_base_url: str = "https://api-slb.krill-ai.com/codex/v1"
     openai_model: str = "gpt-5.6-sol"
-    analyst_model: str | None = None
-    planner_model: str | None = None
+    architect_model: str = "gpt-5.6-sol"
+    reviewer_model: str = "gpt-5.4"
+    designer_model: str = "gpt-5.5"
     verifier_model: str | None = None
     workspace_root: Path = Path("data/workspaces")
     artifacts_root: Path = Path("data/artifacts")
@@ -37,8 +38,10 @@ class Settings(BaseSettings):
 
     def agent_model(self, agent_id: AgentId) -> str:
         field_by_agent: dict[AgentId, str] = {
-            "analyst": "analyst_model",
-            "planner": "planner_model",
+            "architect": "architect_model",
+            "architect_planner": "architect_model",
+            "reviewer": "reviewer_model",
+            "designer": "designer_model",
             "verifier": "verifier_model",
         }
         try:

@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from app.contracts.agents import AgentProposal, VerificationReport
+from app.contracts.agents import AgentProposal, DesignFeedback, ReviewFeedback, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.context import ContextBuilder
@@ -48,24 +48,53 @@ class AgentRuntime:
         self._invocations.clear()
         return invocations
 
-    async def analyst(self, task: TaskContract) -> AgentProposal:
+    async def architect(self, task: TaskContract) -> AgentProposal:
         return cast(
-            AgentProposal, await self._call("analyst", self._context.analyst(task), AgentProposal)
+            AgentProposal,
+            await self._call("architect", self._context.architect(task), AgentProposal),
         )
+
+    async def reviewer(
+        self,
+        task: TaskContract,
+        architecture: AgentProposal,
+    ) -> ReviewFeedback:
+        context = self._context.reviewer(task, architecture.model_dump(mode="json"))
+        return cast(ReviewFeedback, await self._call("reviewer", context, ReviewFeedback))
+
+    async def designer(
+        self,
+        task: TaskContract,
+        architecture: AgentProposal,
+        review: ReviewFeedback,
+    ) -> DesignFeedback:
+        context = self._context.designer(
+            task,
+            architecture.model_dump(mode="json"),
+            review.model_dump(mode="json"),
+        )
+        return cast(DesignFeedback, await self._call("designer", context, DesignFeedback))
 
     async def planner(
         self,
         task: TaskContract,
-        analysis: AgentProposal,
+        architecture: AgentProposal,
+        review: ReviewFeedback,
+        design: DesignFeedback,
         workspace_files: frozenset[str] = frozenset(),
     ) -> ExecutionPlan:
         context = self._context.planner(
             task,
-            analysis.model_dump(mode="json"),
+            architecture.model_dump(mode="json"),
+            review.model_dump(mode="json"),
+            design.model_dump(mode="json"),
             self._tools.catalog(task.allowed_tools),
             workspace_files,
         )
-        return cast(ExecutionPlan, await self._call("planner", context, ExecutionPlan))
+        return cast(
+            ExecutionPlan,
+            await self._call("architect_planner", context, ExecutionPlan),
+        )
 
     async def replanner(
         self,
@@ -73,6 +102,7 @@ class AgentRuntime:
         prior_plan: ExecutionPlan,
         verification: VerificationReport,
         evidence: tuple[dict[str, Any], ...],
+        workspace_files: frozenset[str],
     ) -> ExecutionPlan:
         context = self._context.replanner(
             task,
@@ -80,8 +110,9 @@ class AgentRuntime:
             verification.model_dump(mode="json"),
             evidence,
             self._tools.catalog(task.allowed_tools),
+            workspace_files,
         )
-        return cast(ExecutionPlan, await self._call("planner", context, ExecutionPlan))
+        return cast(ExecutionPlan, await self._call("architect_planner", context, ExecutionPlan))
 
     async def verifier(
         self,
@@ -105,6 +136,8 @@ class AgentRuntime:
         agent_id: str,
         context: dict[str, Any],
         output_model: type[AgentProposal]
+        | type[ReviewFeedback]
+        | type[DesignFeedback]
         | type[ExecutionPlan]
         | type[VerificationReport],
     ) -> object:
@@ -124,7 +157,10 @@ class AgentRuntime:
             source_id=str(uuid4()),
             phase={
                 "analyst": "analysis",
-                "planner": "planning",
+                "architect": "architecture",
+                "reviewer": "review",
+                "designer": "design",
+                "architect_planner": "planning",
                 "verifier": "verification",
             }.get(agent_id, "discussion"),
             message_type="agent_message",

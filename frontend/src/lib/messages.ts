@@ -20,11 +20,10 @@ const stateCopy: Record<TaskState, { content: string; tone?: ChatMessage['tone']
 
 export function conversationToMessage(message: ConversationMessage): ChatMessage {
   const labels: Record<string, string> = {
-    analyst: 'Analyst · 任务分析',
-    domain_expert: 'Domain Expert · 领域方案',
-    critic: 'Critic · 交叉审查',
-    judge: 'Judge · 最终裁决',
-    planner: 'Planner · 执行计划',
+    architect: '架构师 · 深度分析',
+    architect_planner: '架构师 · 最终计划',
+    reviewer: '审查员 · 代码与测试',
+    designer: '设计师 · 创意与体验',
     verifier: 'Verifier · 独立验证',
     executor: 'Executor · 工具执行',
   }

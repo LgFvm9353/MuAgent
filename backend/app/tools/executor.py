@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel
 
 from app.contracts.execution import EvidenceRecord, ExecutionStep
+from app.tools.check_tool import CheckCommandOutput
+from app.tools.file_tools import FileContentOutput, WriteFileOutput
 from app.tools.registry import ToolRegistry
 
 
@@ -45,12 +47,26 @@ class ToolExecutor:
         if len(serialized.encode()) > definition.max_output_bytes:
             raise ValueError("tool output size limit exceeded")
         key = idempotency_key(task_id, plan_version, step)
+        sha256: str | None = None
+        exit_code: int | None = None
+        kind = "tool_result"
+        artifact_path: str | None = None
+        if isinstance(validated, (FileContentOutput, WriteFileOutput)):
+            kind = "file"
+            sha256 = validated.sha256
+            artifact_path = validated.path
+        elif isinstance(validated, CheckCommandOutput):
+            kind = "check"
+            exit_code = validated.exit_code
         evidence = EvidenceRecord(
             evidence_id=uuid4(),
             task_id=task_id,
             step_id=step.step_id,
-            kind="tool_result",
+            kind=kind,
             summary=serialized,
+            sha256=sha256,
+            artifact_path=artifact_path,
+            exit_code=exit_code,
             duration_ms=int((monotonic() - started) * 1000),
             idempotency_key=key,
         )

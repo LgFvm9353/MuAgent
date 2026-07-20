@@ -3,7 +3,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.contracts.agents import AgentProposal, VerificationReport
+from app.contracts.agents import AgentProposal, DesignFeedback, ReviewFeedback, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.harness.registry import AgentDefinition, AgentRegistry
 
@@ -32,18 +32,32 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
     return AgentRegistry(
         (
             definition(
-                "analyst",
-                "task analysis",
-                "analyst/v1.txt",
+                "architect",
+                "software architecture and execution planning",
+                "architect/v1.txt",
                 AgentProposal,
-                settings.agent_model("analyst"),
+                settings.agent_model("architect"),
             ),
             definition(
-                "planner",
-                "execution planning",
-                "planner/v1.txt",
+                "architect_planner",
+                "software architecture and execution planning",
+                "architect/planner-v1.txt",
                 ExecutionPlan,
-                settings.agent_model("planner"),
+                settings.agent_model("architect_planner"),
+            ),
+            definition(
+                "reviewer",
+                "code review and test strategy",
+                "reviewer/v1.txt",
+                ReviewFeedback,
+                settings.agent_model("reviewer"),
+            ),
+            definition(
+                "designer",
+                "creative direction and interface design",
+                "designer/v1.txt",
+                DesignFeedback,
+                settings.agent_model("designer"),
             ),
             definition(
                 "verifier",

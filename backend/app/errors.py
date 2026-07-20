@@ -12,6 +12,7 @@ _SAFE_MESSAGES = {
     "invalid_provider_request": "模型服务不支持当前请求参数。",
     "invalid_tool_call": "模型返回了无效的工具调用。",
     "WorkspacePreconditionError": "任务工作目录当前不可用，请检查任务文件后重试。",  # noqa: RUF001
+    "CheckCommandNotAllowedError": "计划包含未允许的检查命令或参数。",
 }
 
 

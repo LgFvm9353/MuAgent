@@ -18,6 +18,8 @@ class ToolDefinition[InputT: BaseModel, OutputT: BaseModel]:
     idempotent: bool
     max_output_bytes: int
     handler: Callable[[InputT], Awaitable[OutputT]]
+    validate_input: Callable[[InputT], None] | None = None
+    planning_constraints: dict[str, Any] | None = None
 
     def anthropic_schema(self) -> dict[str, Any]:
         schema = self.input_model.model_json_schema()
@@ -32,11 +34,14 @@ class ToolDefinition[InputT: BaseModel, OutputT: BaseModel]:
         }
 
     def planning_schema(self) -> dict[str, Any]:
-        return {
+        schema = {
             **self.anthropic_schema(),
             "risk": self.risk.value,
             "idempotent": self.idempotent,
         }
+        if self.planning_constraints is not None:
+            schema["planning_constraints"] = self.planning_constraints
+        return schema
 
 
 class UnknownToolError(LookupError):

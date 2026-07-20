@@ -1,7 +1,12 @@
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from app.contracts.agents import AgentProposal, VerificationReport
+from app.contracts.agents import (
+    AgentProposal,
+    DesignFeedback,
+    ReviewFeedback,
+    VerificationReport,
+)
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.model_gateway import ModelUsage
@@ -18,12 +23,27 @@ class AgentInvocation:
 
 
 class AgentRuntime(Protocol):
-    async def analyst(self, task: TaskContract) -> AgentProposal: ...
+    async def architect(self, task: TaskContract) -> AgentProposal: ...
+
+    async def reviewer(
+        self,
+        task: TaskContract,
+        architecture: AgentProposal,
+    ) -> ReviewFeedback: ...
+
+    async def designer(
+        self,
+        task: TaskContract,
+        architecture: AgentProposal,
+        review: ReviewFeedback,
+    ) -> DesignFeedback: ...
 
     async def planner(
         self,
         task: TaskContract,
-        analysis: AgentProposal,
+        architecture: AgentProposal,
+        review: ReviewFeedback,
+        design: DesignFeedback,
         workspace_files: frozenset[str] = frozenset(),
     ) -> ExecutionPlan: ...
 
@@ -33,6 +53,7 @@ class AgentRuntime(Protocol):
         prior_plan: ExecutionPlan,
         verification: VerificationReport,
         evidence: tuple[dict[str, Any], ...],
+        workspace_files: frozenset[str],
     ) -> ExecutionPlan: ...
 
     async def verifier(
@@ -49,7 +70,9 @@ class AgentRuntime(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DeliberationResult:
-    analysis: AgentProposal
+    architecture: AgentProposal
+    review: ReviewFeedback
+    design: DesignFeedback
     plan: ExecutionPlan
 
 
@@ -62,6 +85,19 @@ class Scheduler:
         task: TaskContract,
         workspace_files: frozenset[str] = frozenset(),
     ) -> DeliberationResult:
-        analysis = await self._runtime.analyst(task)
-        plan = await self._runtime.planner(task, analysis, workspace_files)
-        return DeliberationResult(analysis=analysis, plan=plan)
+        architecture = await self._runtime.architect(task)
+        review = await self._runtime.reviewer(task, architecture)
+        design = await self._runtime.designer(task, architecture, review)
+        plan = await self._runtime.planner(
+            task,
+            architecture,
+            review,
+            design,
+            workspace_files,
+        )
+        return DeliberationResult(
+            architecture=architecture,
+            review=review,
+            design=design,
+            plan=plan,
+        )

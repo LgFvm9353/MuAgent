@@ -13,16 +13,48 @@ class ContextBuilder:
             "denied_tools": sorted(task.denied_tools),
         }
 
+    def architect(self, task: TaskContract) -> dict[str, Any]:
+        return {
+            "task": task.model_dump(mode="json"),
+            "instruction": "Propose the smallest sound technical approach for this software task.",
+        }
+
+    def reviewer(
+        self,
+        task: TaskContract,
+        architecture: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "task": task.model_dump(mode="json"),
+            "architecture_proposal": architecture,
+        }
+
+    def designer(
+        self,
+        task: TaskContract,
+        architecture: dict[str, Any],
+        review: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "task": task.model_dump(mode="json"),
+            "architecture_proposal": architecture,
+            "code_review": review,
+        }
+
     def planner(
         self,
         task: TaskContract,
-        analysis: dict[str, Any],
+        architecture: dict[str, Any],
+        review: dict[str, Any],
+        design: dict[str, Any],
         tool_catalog: tuple[dict[str, Any], ...],
         workspace_files: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),
-            "analysis": analysis,
+            "architecture_proposal": architecture,
+            "code_review": review,
+            "design_feedback": design,
             "tool_catalog": tool_catalog,
             "workspace": {
                 "empty": not workspace_files,
@@ -37,6 +69,7 @@ class ContextBuilder:
         verification: dict[str, Any],
         evidence: tuple[dict[str, Any], ...],
         tool_catalog: tuple[dict[str, Any], ...],
+        workspace_files: frozenset[str],
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),
@@ -44,7 +77,11 @@ class ContextBuilder:
             "verification_failure": verification,
             "evidence": evidence,
             "tool_catalog": tool_catalog,
-            "instruction": "Change only steps required to address verified failures.",
+            "workspace": {"files": sorted(workspace_files)},
+            "instruction": (
+                "Change only steps required to address verified failures. "
+                "Modify existing files instead of creating them again, then rerun the failed checks."
+            ),
         }
 
     def verifier(

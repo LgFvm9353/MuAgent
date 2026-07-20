@@ -8,12 +8,23 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import database_session
 from app.config import get_settings
 from app.contracts.task import TaskContract
-from app.models import ConversationMessage, Task, TaskEvent
+from app.models import (
+    ConversationMessage,
+    EvidenceRecordModel,
+    ExecutionPlanRecord,
+    ExecutionStepRecord,
+    Task,
+    TaskEvent,
+    ToolCall,
+    UsageRecord,
+    VerificationReportModel,
+)
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskNotFoundError, TaskRepository
 from app.services.tasks import TaskService
@@ -75,6 +86,122 @@ async def get_task(task_id: UUID, session: Session) -> TaskResponse:
     except TaskNotFoundError as error:
         raise HTTPException(status_code=404, detail="task not found") from error
     return TaskResponse.model_validate(task)
+
+
+class TaskResultResponse(BaseModel):
+    task: TaskResponse
+    plan: dict[str, Any] | None
+    plan_version: int | None
+    steps: list[dict[str, Any]]
+    tool_calls: list[dict[str, Any]]
+    verification: dict[str, Any] | None
+    evidence: list[dict[str, Any]]
+    usage: dict[str, int | float]
+
+
+@router.get("/{task_id}/result", response_model=TaskResultResponse)
+async def task_result(task_id: UUID, session: Session) -> TaskResultResponse:
+    try:
+        task = await TaskRepository(session).get(task_id)
+    except TaskNotFoundError as error:
+        raise HTTPException(status_code=404, detail="task not found") from error
+
+    plan = await session.scalar(
+        select(ExecutionPlanRecord)
+        .where(ExecutionPlanRecord.task_id == task_id)
+        .order_by(ExecutionPlanRecord.version.desc())
+        .limit(1)
+    )
+    steps: list[ExecutionStepRecord] = []
+    calls: list[ToolCall] = []
+    verification: VerificationReportModel | None = None
+    if plan is not None:
+        steps = list(
+            await session.scalars(
+                select(ExecutionStepRecord)
+                .where(ExecutionStepRecord.plan_id == plan.id)
+                .order_by(ExecutionStepRecord.created_at)
+            )
+        )
+        step_ids = [step.id for step in steps]
+        if step_ids:
+            calls = list(
+                await session.scalars(
+                    select(ToolCall)
+                    .where(ToolCall.step_id.in_(step_ids))
+                    .order_by(ToolCall.created_at)
+                )
+            )
+        verification = await session.scalar(
+            select(VerificationReportModel)
+            .where(
+                VerificationReportModel.task_id == task_id,
+                VerificationReportModel.plan_id == plan.id,
+            )
+            .order_by(VerificationReportModel.created_at.desc())
+            .limit(1)
+        )
+    evidence = list(
+        await session.scalars(
+            select(EvidenceRecordModel)
+            .where(EvidenceRecordModel.task_id == task_id)
+            .order_by(EvidenceRecordModel.created_at)
+        )
+    )
+    usage_records = list(
+        await session.scalars(
+            select(UsageRecord)
+            .where(UsageRecord.task_id == task_id)
+            .order_by(UsageRecord.created_at)
+        )
+    )
+    return TaskResultResponse(
+        task=TaskResponse.model_validate(task),
+        plan=plan.content if plan is not None else None,
+        plan_version=plan.version if plan is not None else None,
+        steps=[
+            {"id": str(step.id), "status": step.status, "content": step.content}
+            for step in steps
+        ],
+        tool_calls=[
+            {
+                "id": str(call.id),
+                "step_id": str(call.step_id),
+                "tool_name": call.tool_name,
+                "status": call.status,
+                "arguments": {
+                    key: value
+                    for key, value in call.arguments.items()
+                    if key not in {"content", "api_key", "token", "password", "secret"}
+                },
+                "result": call.result,
+                "error_type": call.error_type,
+            }
+            for call in calls
+        ],
+        verification=verification.content if verification is not None else None,
+        evidence=[
+            {
+                "id": str(item.id),
+                "kind": item.kind,
+                "content": item.content,
+                "sha256": item.sha256,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in evidence
+        ],
+        usage={
+            "input_tokens": sum(
+                item.input_tokens
+                + item.cache_creation_input_tokens
+                + item.cache_read_input_tokens
+                for item in usage_records
+            ),
+            "output_tokens": sum(item.output_tokens for item in usage_records),
+            "estimated_cost_usd": sum(item.estimated_cost_usd for item in usage_records),
+            "latency_ms": sum(item.latency_ms for item in usage_records),
+        },
+    )
 
 
 class EventResponse(BaseModel):

@@ -30,9 +30,13 @@ def validate_plan(
             raise SemanticValidationError(f"tool is not allowed: {step.tool_name}")
         definition = tools.get(step.tool_name)
         try:
-            definition.input_model.model_validate(step.arguments)
+            validated_arguments = definition.input_model.model_validate(step.arguments)
+            if definition.validate_input is not None:
+                definition.validate_input(validated_arguments)
         except ValueError as error:
-            raise SemanticValidationError(f"invalid arguments for {step.tool_name}") from error
+            raise SemanticValidationError(
+                f"invalid arguments for {step.tool_name}: {error}"
+            ) from error
         if step.risk != definition.risk:
             raise SemanticValidationError(f"risk mismatch for {step.tool_name}")
         if step.risk is RiskLevel.HIGH and not step.verification_method.strip():

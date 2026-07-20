@@ -59,6 +59,36 @@ export interface TaskContract {
   failure_policy: string
 }
 
+export interface TaskResult {
+  task: Task
+  plan: { steps?: Array<Record<string, unknown>> } | null
+  plan_version: number | null
+  steps: Array<{ id: string; status: string; content: Record<string, unknown> }>
+  tool_calls: Array<{
+    id: string
+    step_id: string
+    tool_name: string
+    status: string
+    arguments: Record<string, unknown>
+    result: Record<string, unknown> | null
+    error_type: string | null
+  }>
+  verification: Record<string, unknown> | null
+  evidence: Array<{
+    id: string
+    kind: string
+    content: Record<string, unknown>
+    sha256: string | null
+    created_at: string
+  }>
+  usage: {
+    input_tokens: number
+    output_tokens: number
+    estimated_cost_usd: number
+    latency_ms: number
+  }
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'agent'

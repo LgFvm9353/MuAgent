@@ -13,6 +13,22 @@ class AgentProposal(ContractModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class ReviewFeedback(ContractModel):
+    summary: str = Field(min_length=1, max_length=5_000)
+    findings: tuple[str, ...] = ()
+    required_tests: tuple[str, ...] = ()
+    blocking_issues: tuple[str, ...] = ()
+    confidence: float = Field(ge=0, le=1)
+
+
+class DesignFeedback(ContractModel):
+    summary: str = Field(min_length=1, max_length=5_000)
+    recommendations: tuple[str, ...] = ()
+    interaction_risks: tuple[str, ...] = ()
+    applicable: bool = True
+    confidence: float = Field(ge=0, le=1)
+
+
 class VerificationReport(ContractModel):
     verdict: Literal["passed", "failed", "needs_review"]
     criterion_results: dict[str, bool]

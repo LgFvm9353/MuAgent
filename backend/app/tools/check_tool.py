@@ -6,6 +6,10 @@ from app.contracts.base import ContractModel
 from app.workspace.paths import Workspace
 
 
+class CheckCommandNotAllowedError(ValueError):
+    pass
+
+
 class CheckCommandInput(ContractModel):
     command: str
     arguments: tuple[str, ...]
@@ -38,12 +42,22 @@ class CheckCommandTool:
         self._timeout = timeout_seconds
         self._max_output = max_output_bytes
 
-    async def run(self, request: CheckCommandInput) -> CheckCommandOutput:
+    def validate_request(self, request: CheckCommandInput) -> None:
         definition = self._allowed.get(request.command)
         if definition is None:
-            raise ValueError("command is not allowlisted")
+            raise CheckCommandNotAllowedError("command is not allowlisted")
         if request.arguments not in definition.argument_sets:
-            raise ValueError("command arguments are not allowlisted")
+            raise CheckCommandNotAllowedError("command arguments are not allowlisted")
+
+    def planning_constraints(self) -> dict[str, list[list[str]]]:
+        return {
+            name: [list(arguments) for arguments in definition.argument_sets]
+            for name, definition in sorted(self._allowed.items())
+        }
+
+    async def run(self, request: CheckCommandInput) -> CheckCommandOutput:
+        self.validate_request(request)
+        definition = self._allowed[request.command]
         environment = {
             key: os.environ[key]
             for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP")

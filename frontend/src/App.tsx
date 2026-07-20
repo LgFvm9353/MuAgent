@@ -1,13 +1,14 @@
 import { Bot, Menu, Plus, Wifi, WifiOff } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Conversation } from './components/Conversation'
 import { TaskComposer } from './components/TaskComposer'
 import { TaskSidebar } from './components/TaskSidebar'
+import { TaskResultPanel } from './components/TaskResultPanel'
 import { ToastProvider, useToast } from './components/ToastProvider'
 import { useTaskStream } from './hooks/useTaskStream'
-import { ApiError, cancelTask, createTask, decideConfirmation, getPendingConfirmations, getTask, getTaskEvents, getTaskMessages, listTasks } from './lib/api'
+import { ApiError, cancelTask, createTask, decideConfirmation, getPendingConfirmations, getTask, getTaskEvents, getTaskMessages, getTaskResult, listTasks } from './lib/api'
 import { conversationToMessage, eventToMessage } from './lib/messages'
-import type { ChatMessage, ConversationMessage, PendingConfirmation, Task, TaskEvent, TaskState } from './types/api'
+import type { ChatMessage, ConversationMessage, PendingConfirmation, Task, TaskEvent, TaskResult, TaskState } from './types/api'
 
 const terminal = new Set<TaskState>(['NEEDS_REVIEW', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REJECTED', 'BUDGET_EXCEEDED'])
 
@@ -22,10 +23,13 @@ function Workbench() {
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
   const [confirmations, setConfirmations] = useState<PendingConfirmation[]>([])
+  const [result, setResult] = useState<TaskResult | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const loadGeneration = useRef(0)
+  const loadController = useRef<AbortController | null>(null)
 
   const loadTasks = useCallback(async () => {
     setLoading(true); setError(null)
@@ -39,16 +43,29 @@ function Workbench() {
   useEffect(() => { void loadTasks() }, [loadTasks])
 
   const loadSelected = useCallback(async (task: Task) => {
-    setSelected(task); setEvents([]); setConversation([]); setConfirmations([]); setError(null); setLoading(true); setSidebarOpen(false)
+    const generation = ++loadGeneration.current
+    loadController.current?.abort()
+    const controller = new AbortController()
+    loadController.current = controller
+    setSelected(task); setEvents([]); setConversation([]); setConfirmations([]); setResult(null); setError(null); setLoading(true); setSidebarOpen(false)
     try {
-      const [detail, timeline, messages, pending] = await Promise.all([
-        getTask(task.id),
-        getTaskEvents(task.id),
-        getTaskMessages(task.id),
-        getPendingConfirmations(task.id),
+      const [detail, timeline, messages, pending, taskResult] = await Promise.all([
+        getTask(task.id, controller.signal),
+        getTaskEvents(task.id, controller.signal),
+        getTaskMessages(task.id, controller.signal),
+        getPendingConfirmations(task.id, controller.signal),
+        getTaskResult(task.id, controller.signal),
       ])
-      setSelected(detail); setEvents(timeline); setConversation(messages); setConfirmations(pending)
-    } catch (cause) { setError(errorText(cause)) } finally { setLoading(false) }
+      if (generation !== loadGeneration.current) return
+      setSelected(detail); setEvents(timeline); setConversation(messages); setConfirmations(pending); setResult(taskResult)
+    } catch (cause) {
+      if (generation === loadGeneration.current && !(cause instanceof DOMException && cause.name === 'AbortError')) setError(errorText(cause))
+    } finally {
+      if (generation === loadGeneration.current) {
+        loadController.current = null
+        setLoading(false)
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -64,7 +81,13 @@ function Workbench() {
       setSelected((task) => task ? { ...task, state: event.to_state as TaskState, updated_at: event.created_at } : task)
       setTasks((items) => items.map((task) => task.id === selected?.id ? { ...task, state: event.to_state as TaskState, updated_at: event.created_at } : task))
       if (event.to_state === 'WAITING_CONFIRMATION' && selected?.id) {
-        void getPendingConfirmations(selected.id).then(setConfirmations).catch(() => undefined)
+        void Promise.all([
+          getPendingConfirmations(selected.id),
+          getTaskResult(selected.id),
+        ]).then(([pending, taskResult]) => {
+          setConfirmations(pending)
+          setResult(taskResult)
+        }).catch(() => undefined)
       }
     }
   }, [selected?.id])
@@ -76,8 +99,15 @@ function Workbench() {
   const refreshSelected = useCallback(async () => {
     if (!selected) return
     try {
-      const task = await getTask(selected.id)
+      const [task, timeline, messages, pending, taskResult] = await Promise.all([
+        getTask(selected.id),
+        getTaskEvents(selected.id),
+        getTaskMessages(selected.id),
+        getPendingConfirmations(selected.id),
+        getTaskResult(selected.id),
+      ])
       setSelected(task); setTasks((items) => items.map((item) => item.id === task.id ? task : item))
+      setEvents(timeline); setConversation(messages); setConfirmations(pending); setResult(taskResult)
     } catch { /* SSE completion refresh is best-effort. */ }
   }, [selected])
 
@@ -112,9 +142,13 @@ function Workbench() {
     setBusy(true)
     try {
       const task = await createTask(goal)
-      setTasks((items) => [task, ...items]); setSelected(task); setEvents([]); setConversation([]); setConfirmations([]); setError(null)
-      show({ tone: 'success', title: '任务已创建', description: '多 Agent 协作流程已启动。' })
-    } catch (cause) { show({ tone: 'error', title: '创建任务失败', description: errorText(cause) }) } finally { setBusy(false) }
+      setTasks((items) => [task, ...items]); setSelected(task); setEvents([]); setConversation([]); setConfirmations([]); setResult(null); setError(null)
+      show({ tone: 'success', title: '任务已创建', description: '三位专业 Agent 已开始协作。' })
+      return true
+    } catch (cause) {
+      show({ tone: 'error', title: '创建任务失败', description: errorText(cause) })
+      return false
+    } finally { setBusy(false) }
   }
 
   const decide = async (confirmation: PendingConfirmation, approved: boolean) => {
@@ -144,7 +178,7 @@ function Workbench() {
     } catch (cause) { show({ tone: 'error', title: '取消任务失败', description: errorText(cause) }) } finally { setBusy(false) }
   }
 
-  const newTask = () => { setSelected(null); setEvents([]); setConversation([]); setConfirmations([]); setError(null); setSidebarOpen(false) }
+  const newTask = () => { loadController.current?.abort(); loadGeneration.current += 1; setSelected(null); setEvents([]); setConversation([]); setConfirmations([]); setResult(null); setError(null); setSidebarOpen(false) }
   const connected = streamStatus === 'connected'
 
   return <div className="app-shell">
@@ -153,7 +187,7 @@ function Workbench() {
     <main className="main-panel">
       <header className="topbar"><div className="flex items-center gap-3"><button className="icon-button lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="打开任务列表"><Menu size={19}/></button><div className="brand-mark"><Bot size={19}/></div><div><h1>Agent Console</h1><p>多 Agent 协作工作台</p></div></div><div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" onClick={newTask}><Plus size={15}/>新建任务</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : streamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div></header>
       {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前任务</span><h2 className="truncate">{selected.goal}</h2></div><span className={`state-pill state-${selected.state.toLowerCase()}`}>{selected.state.replaceAll('_', ' ')}</span></div>}
-      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadTasks()}/></section>
+      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadTasks()}/><TaskResultPanel result={result}/></section>
       {confirmations.length > 0 && <section className="confirmation-panel">
         {confirmations.map((confirmation) => <article className="confirmation-card" key={confirmation.call_hash}>
           <div><strong>Executor 请求人工确认</strong><p>{confirmation.tool_name} · {confirmation.risk}</p><p>{confirmation.impact}</p><details><summary>查看工具参数</summary><pre>{JSON.stringify(confirmation.arguments, null, 2)}</pre></details></div>

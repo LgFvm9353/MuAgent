@@ -1,4 +1,4 @@
-import type { ConversationMessage, PendingConfirmation, Task, TaskContract, TaskEvent } from '../types/api'
+import type { ConversationMessage, PendingConfirmation, Task, TaskContract, TaskEvent, TaskResult } from '../types/api'
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -31,7 +31,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: { 'Content-Type': 'application/json', ...init?.headers },
     })
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
     throw new ApiError('无法连接后端服务，请确认 FastAPI 已启动。', undefined, 'NETWORK_ERROR')
   }
 
@@ -54,20 +55,24 @@ export function listTasks(): Promise<Task[]> {
   return request('/tasks?limit=50&offset=0')
 }
 
-export function getTask(taskId: string): Promise<Task> {
-  return request(`/tasks/${taskId}`)
+export function getTask(taskId: string, signal?: AbortSignal): Promise<Task> {
+  return request(`/tasks/${taskId}`, { signal })
 }
 
-export function getTaskEvents(taskId: string): Promise<TaskEvent[]> {
-  return request(`/tasks/${taskId}/events`)
+export function getTaskEvents(taskId: string, signal?: AbortSignal): Promise<TaskEvent[]> {
+  return request(`/tasks/${taskId}/events`, { signal })
 }
 
-export function getTaskMessages(taskId: string): Promise<ConversationMessage[]> {
-  return request(`/tasks/${taskId}/messages?after=0&limit=500`)
+export function getTaskMessages(taskId: string, signal?: AbortSignal): Promise<ConversationMessage[]> {
+  return request(`/tasks/${taskId}/messages?after=0&limit=500`, { signal })
 }
 
-export function getPendingConfirmations(taskId: string): Promise<PendingConfirmation[]> {
-  return request(`/tasks/${taskId}/confirmations/pending`)
+export function getPendingConfirmations(taskId: string, signal?: AbortSignal): Promise<PendingConfirmation[]> {
+  return request(`/tasks/${taskId}/confirmations/pending`, { signal })
+}
+
+export function getTaskResult(taskId: string, signal?: AbortSignal): Promise<TaskResult> {
+  return request(`/tasks/${taskId}/result`, { signal })
 }
 
 export function decideConfirmation(

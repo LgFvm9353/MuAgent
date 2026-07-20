@@ -4,7 +4,7 @@ import { useState } from 'react'
 interface TaskComposerProps {
   busy: boolean
   running: boolean
-  onSubmit: (goal: string) => Promise<void>
+  onSubmit: (goal: string) => Promise<boolean>
   onCancel: () => Promise<void>
 }
 
@@ -18,8 +18,8 @@ export function TaskComposer({ busy, running, onSubmit, onCancel }: TaskComposer
       return
     }
     setError('')
-    await onSubmit(goal)
-    setGoal('')
+    const created = await onSubmit(goal)
+    if (created) setGoal('')
   }
 
   return <div className="composer-wrap">

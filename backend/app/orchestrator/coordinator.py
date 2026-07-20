@@ -108,7 +108,7 @@ class Coordinator:
         clear_contextvars()
         bind_contextvars(task_id=str(task_id), trace_id=str(trace_id))
         try:
-            await self._contract(task_id)
+            contract = await self._contract(task_id)
             workspace_root = ensure_task_directory(self._settings.workspace_root, task_id)
             workspace_files = frozenset(
                 path.relative_to(workspace_root).as_posix()
@@ -122,31 +122,36 @@ class Coordinator:
                 tools,
                 ConversationService(self._sessions).sink(task_id),
             )
-            state = await self._state(task_id)
             orchestrator = OrchestratorService(self._sessions, runtime, self._agents, tools)
-            if state is TaskState.PENDING:
-                await orchestrator.run(task_id, workspace_files)
+            executor = ExecutionService(
+                self._sessions,
+                runtime,
+                self._agents,
+                ToolExecutor(tools),
+                workspace_root,
+            )
+            state = await self._state(task_id)
+            max_transitions = 3 + 2 * contract.budget.max_revisions
+            transitions = 0
+            while state in {TaskState.PENDING, TaskState.EXECUTING, TaskState.REPLANNING}:
+                previous = state
+                if state is TaskState.PENDING:
+                    await orchestrator.run(task_id, workspace_files)
+                elif state is TaskState.EXECUTING:
+                    await executor.execute(task_id)
+                else:
+                    workspace_files = frozenset(
+                        path.relative_to(workspace_root).as_posix()
+                        for path in workspace_root.rglob("*")
+                        if path.is_file() and not path.is_symlink()
+                    )
+                    await orchestrator.replan(task_id, workspace_files)
                 state = await self._state(task_id)
-            if state is TaskState.EXECUTING:
-                await ExecutionService(
-                    self._sessions,
-                    runtime,
-                    self._agents,
-                    ToolExecutor(tools),
-                    workspace_root,
-                ).execute(task_id)
-                state = await self._state(task_id)
-            if state is TaskState.REPLANNING:
-                await orchestrator.replan(task_id)
-                state = await self._state(task_id)
-                if state is TaskState.EXECUTING:
-                    await ExecutionService(
-                        self._sessions,
-                        runtime,
-                        self._agents,
-                        ToolExecutor(tools),
-                        workspace_root,
-                    ).execute(task_id)
+                transitions += 1
+                if state is previous:
+                    raise RuntimeError(f"orchestrator made no state progress: {state}")
+                if transitions > max_transitions:
+                    raise RuntimeError("orchestrator exceeded the bounded state loop")
         except WorkspacePreconditionError as error:
             error_code, message = safe_error_summary(error)
             logger().warning("task needs workspace review", error_code=error_code)

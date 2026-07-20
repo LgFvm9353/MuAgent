@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from app.config import Settings
@@ -34,6 +35,10 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
             "pytest": AllowedCommand(
                 executable="pytest",
                 argument_sets=(("-q",),),
+            ),
+            "npm_test": AllowedCommand(
+                executable="npm.cmd" if os.name == "nt" else "npm",
+                argument_sets=(("test",),),
             ),
         },
         timeout_seconds=settings.tool_timeout_seconds,
@@ -100,7 +105,8 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
         ToolDefinition(
             name="run_allowlisted_check",
             description=(
-                "Run a configured side-effect-free check command inside the task workspace."
+                "Run one configured side-effect-free check inside the task workspace. "
+                "Use only the logical commands and exact argument sets in planning_constraints."
             ),
             input_model=CheckCommandInput,
             output_model=CheckCommandOutput,
@@ -109,6 +115,10 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
             idempotent=True,
             max_output_bytes=1024 * 1024,
             handler=checks.run,
+            validate_input=checks.validate_request,
+            planning_constraints={
+                "allowed_command_arguments": checks.planning_constraints()
+            },
         )
     )
     return registry

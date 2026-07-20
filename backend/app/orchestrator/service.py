@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.agents import VerificationReport
@@ -117,13 +117,13 @@ class OrchestratorService:
                         estimated_cost_usd=estimated_cost,
                     )
                 )
-                if invocation.agent_id == "analyst":
+                if invocation.agent_id in {"architect", "reviewer", "designer"}:
                     session.add(
                         Proposal(
                             task_id=task_id,
                             agent_run_id=run.id,
                             version=1,
-                            content=result.analysis.model_dump(mode="json"),
+                            content=invocation.output,
                         )
                     )
             if (
@@ -192,7 +192,11 @@ class OrchestratorService:
             )
             await session.commit()
 
-    async def replan(self, task_id: UUID) -> None:
+    async def replan(
+        self,
+        task_id: UUID,
+        workspace_files: frozenset[str],
+    ) -> None:
         async with self._sessions() as session:
             repository = TaskRepository(session)
             task = await repository.get(task_id, for_update=True)
@@ -245,13 +249,89 @@ class OrchestratorService:
             prior_plan,
             verification,
             evidence,
+            workspace_files,
         )
         new_plan = new_plan.model_copy(update={"task_id": task_id, "version": next_version})
-        validate_plan(new_plan, contract, self._tools)
+        validate_plan(
+            new_plan,
+            contract,
+            self._tools,
+            workspace_files=workspace_files,
+        )
 
         async with self._sessions() as session:
             repository = TaskRepository(session)
             task = await repository.get(task_id, for_update=True)
+            for invocation in self._runtime.drain_invocations():
+                definition = self._agents.get(invocation.agent_id)
+                run = AgentRun(
+                    task_id=task_id,
+                    agent_id=invocation.agent_id,
+                    prompt_version=definition.prompt_version,
+                    schema_version=definition.schema_version,
+                    model=definition.model,
+                    config_hash=definition.config_hash(),
+                    status="succeeded",
+                    output=invocation.output,
+                )
+                session.add(run)
+                await session.flush()
+                usage = invocation.usage
+                estimated_cost = float(
+                    estimate_cost(
+                        usage.model,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                        cache_read_input_tokens=usage.cache_read_input_tokens,
+                    )
+                )
+                session.add(
+                    UsageRecord(
+                        task_id=task_id,
+                        agent_run_id=run.id,
+                        request_id=usage.request_id,
+                        model=usage.model,
+                        stop_reason=usage.stop_reason,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                        cache_read_input_tokens=usage.cache_read_input_tokens,
+                        latency_ms=usage.latency_ms,
+                        retry_count=usage.retry_count,
+                        estimated_cost_usd=estimated_cost,
+                    )
+                )
+            await session.flush()
+            usage_totals = (
+                await session.execute(
+                    select(
+                        func.coalesce(
+                            func.sum(
+                                UsageRecord.input_tokens
+                                + UsageRecord.cache_creation_input_tokens
+                                + UsageRecord.cache_read_input_tokens
+                                + UsageRecord.output_tokens
+                            ),
+                            0,
+                        ),
+                        func.coalesce(func.sum(UsageRecord.estimated_cost_usd), 0.0),
+                    ).where(UsageRecord.task_id == task_id)
+                )
+            ).one()
+            if (
+                int(usage_totals[0]) > contract.budget.max_tokens
+                or float(usage_totals[1]) > contract.budget.max_cost_usd
+            ):
+                await repository.transition(
+                    task_id,
+                    TaskState.BUDGET_EXCEEDED,
+                    expected_version=task.version,
+                    trace_id=task.trace_id,
+                    reason="replanning exceeded task budget",
+                )
+                await session.commit()
+                return
             plan_record = ExecutionPlanRecord(
                 id=new_plan.plan_id,
                 task_id=task_id,
