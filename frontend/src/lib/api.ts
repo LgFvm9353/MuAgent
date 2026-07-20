@@ -1,4 +1,4 @@
-import type { ConversationMessage, PendingConfirmation, Task, TaskContract, TaskEvent, TaskResult } from '../types/api'
+import type { ConversationMessage, ConversationThread, ConversationTurn, PendingConfirmation, Task, TaskContract, TaskEvent, TaskResult } from '../types/api'
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -49,6 +49,35 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
+}
+
+export function listConversations(): Promise<ConversationThread[]> {
+  return request('/conversations?limit=50&offset=0')
+}
+
+export function createConversation(title = '新对话'): Promise<ConversationThread> {
+  return request('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function getConversation(conversationId: string, signal?: AbortSignal): Promise<ConversationThread> {
+  return request(`/conversations/${conversationId}`, { signal })
+}
+
+export function getConversationMessages(conversationId: string, signal?: AbortSignal): Promise<ConversationMessage[]> {
+  return request(`/conversations/${conversationId}/messages?after=0&limit=1000`, { signal })
+}
+
+export function sendConversationMessage(conversationId: string, goal: string): Promise<ConversationTurn> {
+  return request(`/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({
+      idempotency_key: crypto.randomUUID(),
+      contract: buildTaskContract(goal),
+    }),
+  })
 }
 
 export function listTasks(): Promise<Task[]> {

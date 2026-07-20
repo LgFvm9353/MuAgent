@@ -4,6 +4,21 @@ export type TaskState =
   | 'NEEDS_REVIEW' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'REJECTED'
   | 'BUDGET_EXCEEDED'
 
+export interface ConversationThread {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  latest_task_id: string | null
+  latest_task_state: TaskState | null
+}
+
+export interface ConversationTurn {
+  task_id: string
+  conversation_id: string
+  state: TaskState
+}
+
 export interface Task {
   id: string
   trace_id: string
@@ -28,7 +43,7 @@ export interface ConversationMessage {
   id: number
   task_id: string
   agent_id: string
-  role: 'agent' | 'system' | 'tool'
+  role: 'agent' | 'system' | 'tool' | 'user'
   message_type: string
   phase: string
   summary: string

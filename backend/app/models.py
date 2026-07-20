@@ -32,9 +32,24 @@ class TimestampMixin:
     )
 
 
+class Conversation(Base, TimestampMixin):
+    __tablename__ = "conversations"
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        index=True,
+    )
+
+
 class Task(Base, TimestampMixin):
     __tablename__ = "tasks"
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4)
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
     trace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), nullable=False, index=True)
     state: Mapped[str] = mapped_column(String(32), default=TaskState.PENDING, index=True)
     contract: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

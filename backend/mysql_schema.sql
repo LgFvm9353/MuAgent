@@ -7,8 +7,18 @@ CREATE DATABASE IF NOT EXISTS `agent`
 
 USE `agent`;
 
+CREATE TABLE IF NOT EXISTS `conversations` (
+    `id` CHAR(32) NOT NULL,
+    `title` VARCHAR(255) NOT NULL,
+    `updated_at` DATETIME(6) NOT NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    KEY `ix_conversations_updated_at` (`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `tasks` (
     `id` CHAR(32) NOT NULL,
+    `conversation_id` CHAR(32) NOT NULL,
     `trace_id` CHAR(32) NOT NULL,
     `state` VARCHAR(32) NOT NULL,
     `contract` JSON NOT NULL,
@@ -17,9 +27,12 @@ CREATE TABLE IF NOT EXISTS `tasks` (
     `updated_at` DATETIME(6) NOT NULL,
     `created_at` DATETIME(6) NOT NULL,
     PRIMARY KEY (`id`),
+    KEY `ix_tasks_conversation_id` (`conversation_id`),
     KEY `ix_tasks_trace_id` (`trace_id`),
     KEY `ix_tasks_state` (`state`),
-    KEY `ix_tasks_state_updated` (`state`, `updated_at`)
+    KEY `ix_tasks_state_updated` (`state`, `updated_at`),
+    CONSTRAINT `fk_tasks_conversation_id`
+        FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `task_events` (
@@ -232,9 +245,13 @@ CREATE TABLE IF NOT EXISTS `alembic_version` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `alembic_version` (`version_num`)
-SELECT '0001_initial'
+SELECT '0002_conversations'
 WHERE NOT EXISTS (
     SELECT 1
     FROM `alembic_version`
-    WHERE `version_num` = '0001_initial'
+    WHERE `version_num` = '0002_conversations'
 );
+
+UPDATE `alembic_version`
+SET `version_num` = '0002_conversations'
+WHERE `version_num` = '0001_initial';

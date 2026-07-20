@@ -22,6 +22,7 @@ from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskNotFoundError, TaskRepository
 from app.services.conversation import ConversationService
+from app.services.final_summary import FinalSummaryService
 from app.tools.executor import ToolExecutor
 from app.tools.factory import build_tool_registry
 from app.workspace.task_directory import (
@@ -219,7 +220,7 @@ class Coordinator:
             }:
                 return
             try:
-                await repository.transition(
+                transitioned = await repository.transition(
                     task_id,
                     target,
                     expected_version=task.version,
@@ -254,4 +255,5 @@ class Coordinator:
                         source_id=f"terminal-result:{target.value}:{task.version + 1}",
                     )
                 )
+                await FinalSummaryService(session).add(transitioned, reason=reason)
             await session.commit()

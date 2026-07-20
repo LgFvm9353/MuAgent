@@ -25,6 +25,7 @@ from app.models import (
 from app.orchestrator.scheduler import AgentRuntime
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
+from app.services.final_summary import FinalSummaryService
 from app.tools.executor import ToolExecutor, idempotency_key
 from app.workspace.artifacts import collect_text_artifacts
 from app.workspace.paths import WorkspaceViolationError
@@ -198,13 +199,20 @@ class ExecutionService:
                     "needs_review": TaskState.NEEDS_REVIEW,
                 }[report.verdict]
                 reason = f"verifier verdict: {report.verdict}"
-            await repository.transition(
+            transitioned = await repository.transition(
                 task_id,
                 target,
                 expected_version=task.version,
                 trace_id=task.trace_id,
                 reason=reason,
             )
+            if target in {
+                TaskState.SUCCEEDED,
+                TaskState.FAILED,
+                TaskState.NEEDS_REVIEW,
+                TaskState.BUDGET_EXCEEDED,
+            }:
+                await FinalSummaryService(session).add(transitioned, reason=reason)
             await session.commit()
 
     async def _load(self, task_id: UUID) -> tuple[TaskContract, ExecutionPlan]:

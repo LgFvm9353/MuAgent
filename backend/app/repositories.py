@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     AuditEvent,
+    Conversation,
     ConversationMessage,
     EvidenceRecordModel,
     Task,
@@ -60,6 +61,9 @@ class TaskRepository:
         task.state = target.value
         task.version += 1
         task.updated_at = datetime.now(UTC)
+        conversation = await self._session.get(Conversation, task.conversation_id)
+        if conversation is not None:
+            conversation.updated_at = task.updated_at
         payload = {"reason": reason, "version": task.version, **(details or {})}
         self._session.add(
             TaskEvent(

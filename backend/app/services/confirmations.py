@@ -10,6 +10,7 @@ from app.contracts.task import RiskLevel
 from app.models import Confirmation, ExecutionPlanRecord, Task
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
+from app.services.final_summary import FinalSummaryService
 from app.tools.policy import call_hash as plan_call_hash
 
 
@@ -119,11 +120,15 @@ class ConfirmationService:
         await self._session.flush()
         repository = TaskRepository(self._session)
         if not approved:
-            await repository.transition(
+            rejected_task = await repository.transition(
                 task_id,
                 TaskState.REJECTED,
                 expected_version=task.version,
                 trace_id=task.trace_id,
+                reason="user rejected high-risk operation",
+            )
+            await FinalSummaryService(self._session).add(
+                rejected_task,
                 reason="user rejected high-risk operation",
             )
         else:

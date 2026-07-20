@@ -27,13 +27,18 @@ export function conversationToMessage(message: ConversationMessage): ChatMessage
     verifier: 'Verifier · 独立验证',
     executor: 'Executor · 工具执行',
   }
+  const isUser = message.role === 'user'
+  const isFinal = message.message_type === 'final_summary'
   return {
     id: `message-${message.id}`,
-    role: 'agent',
-    title: labels[message.agent_id] || message.agent_id,
+    role: isUser ? 'user' : 'agent',
+    title: isUser ? undefined : isFinal ? '本轮最终结果' : labels[message.agent_id] || message.agent_id,
     content: message.summary,
     createdAt: message.created_at,
-    details: message.content,
+    tone: isFinal
+      ? message.content.state === 'SUCCEEDED' ? 'success' : 'warning'
+      : undefined,
+    details: isUser ? undefined : message.content,
     agentId: message.agent_id,
     phase: message.phase,
   }
