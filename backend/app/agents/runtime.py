@@ -87,9 +87,17 @@ class AgentRuntime:
         self,
         task: TaskContract,
         plan: ExecutionPlan,
+        execution: tuple[dict[str, Any], ...],
         evidence: tuple[dict[str, Any], ...],
+        artifacts: tuple[dict[str, Any], ...],
     ) -> VerificationReport:
-        context = self._context.verifier(task, plan.model_dump(mode="json"), (), evidence)
+        context = self._context.verifier(
+            task,
+            plan.model_dump(mode="json"),
+            execution,
+            evidence,
+            artifacts,
+        )
         return cast(VerificationReport, await self._call("verifier", context, VerificationReport))
 
     async def _call(

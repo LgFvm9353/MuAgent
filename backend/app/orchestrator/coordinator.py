@@ -133,6 +133,7 @@ class Coordinator:
                     runtime,
                     self._agents,
                     ToolExecutor(tools),
+                    workspace_root,
                 ).execute(task_id)
                 state = await self._state(task_id)
             if state is TaskState.REPLANNING:
@@ -144,6 +145,7 @@ class Coordinator:
                         runtime,
                         self._agents,
                         ToolExecutor(tools),
+                        workspace_root,
                     ).execute(task_id)
         except WorkspacePreconditionError as error:
             error_code, message = safe_error_summary(error)

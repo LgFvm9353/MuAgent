@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +24,7 @@ from app.orchestrator.scheduler import AgentRuntime
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
 from app.tools.executor import ToolExecutor, idempotency_key
+from app.workspace.artifacts import collect_text_artifacts
 from app.workspace.paths import WorkspaceViolationError
 from app.workspace.task_directory import WorkspacePreconditionError
 
@@ -34,11 +36,13 @@ class ExecutionService:
         runtime: AgentRuntime,
         agents: AgentRegistry,
         executor: ToolExecutor,
+        workspace_root: Path,
     ) -> None:
         self._sessions = sessions
         self._runtime = runtime
         self._agents = agents
         self._executor = executor
+        self._workspace_root = workspace_root
 
     async def execute(self, task_id: UUID) -> None:
         contract, plan = await self._load(task_id)
@@ -67,7 +71,25 @@ class ExecutionService:
             )
             await session.commit()
 
-        report = await self._runtime.verifier(contract, plan, tuple(evidence))
+        execution_records = tuple(
+            {
+                "step_id": step.step_id,
+                "tool_name": step.tool_name,
+                "arguments": step.arguments,
+                "expected_result": step.expected_result,
+                "verification_method": step.verification_method,
+                "status": "succeeded",
+            }
+            for step in plan.steps
+        )
+        artifacts = collect_text_artifacts(self._workspace_root)
+        report = await self._runtime.verifier(
+            contract,
+            plan,
+            execution_records,
+            tuple(evidence),
+            artifacts,
+        )
         async with self._sessions() as session:
             repository = TaskRepository(session)
             task = await repository.get(task_id, for_update=True)

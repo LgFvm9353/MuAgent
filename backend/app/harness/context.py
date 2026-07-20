@@ -53,6 +53,7 @@ class ContextBuilder:
         plan: dict[str, Any],
         execution: tuple[dict[str, Any], ...],
         evidence: tuple[dict[str, Any], ...],
+        artifacts: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
         return {
             "acceptance_criteria": [
@@ -61,4 +62,5 @@ class ContextBuilder:
             "approved_plan": plan,
             "execution_records": execution,
             "evidence": evidence,
+            "final_artifacts": artifacts,
         }

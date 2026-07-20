@@ -39,7 +39,9 @@ class AgentRuntime(Protocol):
         self,
         task: TaskContract,
         plan: ExecutionPlan,
+        execution: tuple[dict[str, Any], ...],
         evidence: tuple[dict[str, Any], ...],
+        artifacts: tuple[dict[str, Any], ...],
     ) -> VerificationReport: ...
 
     def drain_invocations(self) -> tuple[AgentInvocation, ...]: ...
