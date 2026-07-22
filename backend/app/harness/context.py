@@ -33,28 +33,28 @@ class ContextBuilder:
         self,
         task: TaskContract,
         architecture: dict[str, Any],
-        review: dict[str, Any],
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),
             "architecture_proposal": architecture,
-            "code_review": review,
         }
 
     def planner(
         self,
         task: TaskContract,
         architecture: dict[str, Any],
-        review: dict[str, Any],
-        design: dict[str, Any],
+        review: dict[str, Any] | None,
+        design: dict[str, Any] | None,
         tool_catalog: tuple[dict[str, Any], ...],
         workspace_files: frozenset[str] = frozenset(),
+        specialist_failures: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),
             "architecture_proposal": architecture,
             "code_review": review,
             "design_feedback": design,
+            "specialist_failures": specialist_failures,
             "tool_catalog": tool_catalog,
             "workspace": {
                 "empty": not workspace_files,

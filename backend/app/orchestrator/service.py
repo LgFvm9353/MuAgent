@@ -18,7 +18,7 @@ from app.models import (
     UsageRecord,
     VerificationReportModel,
 )
-from app.orchestrator.scheduler import AgentRuntime, Scheduler
+from app.orchestrator.scheduler import AgentRuntime, CollaborationSink, Scheduler
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
 from app.tools.policy import ToolPolicy
@@ -32,12 +32,13 @@ class OrchestratorService:
         runtime: AgentRuntime,
         agents: AgentRegistry,
         tools: ToolRegistry,
+        collaboration_sink: CollaborationSink | None = None,
     ) -> None:
         self._sessions = sessions
         self._runtime = runtime
         self._agents = agents
         self._tools = tools
-        self._scheduler = Scheduler(runtime)
+        self._scheduler = Scheduler(runtime, collaboration_sink)
 
     async def run(
         self,
@@ -83,7 +84,7 @@ class OrchestratorService:
                     prompt_version=definition.prompt_version,
                     schema_version=definition.schema_version,
                     model=definition.model,
-                    config_hash=definition.config_hash(),
+                    config_hash=definition.config_hash(invocation.phase),
                     status="succeeded",
                     output=invocation.output,
                 )
@@ -117,7 +118,7 @@ class OrchestratorService:
                         estimated_cost_usd=estimated_cost,
                     )
                 )
-                if invocation.agent_id in {"architect", "reviewer", "designer"}:
+                if invocation.phase in {"analysis", "review", "design"}:
                     session.add(
                         Proposal(
                             task_id=task_id,
@@ -270,7 +271,7 @@ class OrchestratorService:
                     prompt_version=definition.prompt_version,
                     schema_version=definition.schema_version,
                     model=definition.model,
-                    config_hash=definition.config_hash(),
+                    config_hash=definition.config_hash(invocation.phase),
                     status="succeeded",
                     output=invocation.output,
                 )

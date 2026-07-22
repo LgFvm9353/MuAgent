@@ -16,7 +16,11 @@ class ConversationService:
 
     def sink(self, task_id: UUID) -> ConversationSink:
         async def publish(invocation: AgentInvocation) -> None:
-            summary, content = format_agent_message(invocation.agent_id, invocation.output)
+            summary, content = format_agent_message(
+                invocation.agent_id,
+                invocation.output,
+                invocation.phase,
+            )
             async with self._sessions() as session:
                 session.add(
                     ConversationMessage(
@@ -38,16 +42,18 @@ class ConversationService:
 def format_agent_message(
     agent_id: str,
     output: dict[str, Any],
+    phase: str = "discussion",
 ) -> tuple[str, dict[str, Any]]:
-    if agent_id == "analyst":
-        summary = str(output.get("summary") or "Analyst 已完成任务分析。")
-    elif agent_id == "planner":
+    explicit_summary = output.get("summary")
+    if isinstance(explicit_summary, str) and explicit_summary.strip():
+        return explicit_summary.strip(), output
+    if agent_id == "architect" and phase in {"planning", "replanning"}:
         steps = output.get("steps")
         count = len(steps) if isinstance(steps, list) else 0
-        summary = f"Planner 生成了包含 {count} 个步骤的执行计划。"
-    elif agent_id == "verifier":
+        summary = f"Architect 生成了包含 {count} 个步骤的执行计划。"
+    elif agent_id == "reviewer" and phase == "verification":
         verdict = str(output.get("verdict") or "unknown")
-        summary = f"Verifier 验证结论: {verdict}。"
+        summary = f"Reviewer 验证结论: {verdict}。"
     else:
         summary = f"{agent_id} 已完成发言。"
     return summary, output

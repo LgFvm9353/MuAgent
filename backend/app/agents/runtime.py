@@ -51,7 +51,7 @@ class AgentRuntime:
     async def architect(self, task: TaskContract) -> AgentProposal:
         return cast(
             AgentProposal,
-            await self._call("architect", self._context.architect(task), AgentProposal),
+            await self._call("architect", "analysis", self._context.architect(task), AgentProposal),
         )
 
     async def reviewer(
@@ -60,40 +60,46 @@ class AgentRuntime:
         architecture: AgentProposal,
     ) -> ReviewFeedback:
         context = self._context.reviewer(task, architecture.model_dump(mode="json"))
-        return cast(ReviewFeedback, await self._call("reviewer", context, ReviewFeedback))
+        return cast(
+            ReviewFeedback,
+            await self._call("reviewer", "review", context, ReviewFeedback),
+        )
 
     async def designer(
         self,
         task: TaskContract,
         architecture: AgentProposal,
-        review: ReviewFeedback,
     ) -> DesignFeedback:
         context = self._context.designer(
             task,
             architecture.model_dump(mode="json"),
-            review.model_dump(mode="json"),
         )
-        return cast(DesignFeedback, await self._call("designer", context, DesignFeedback))
+        return cast(
+            DesignFeedback,
+            await self._call("designer", "design", context, DesignFeedback),
+        )
 
     async def planner(
         self,
         task: TaskContract,
         architecture: AgentProposal,
-        review: ReviewFeedback,
-        design: DesignFeedback,
+        review: ReviewFeedback | None,
+        design: DesignFeedback | None,
         workspace_files: frozenset[str] = frozenset(),
+        specialist_failures: tuple[str, ...] = (),
     ) -> ExecutionPlan:
         context = self._context.planner(
             task,
             architecture.model_dump(mode="json"),
-            review.model_dump(mode="json"),
-            design.model_dump(mode="json"),
+            review.model_dump(mode="json") if review is not None else None,
+            design.model_dump(mode="json") if design is not None else None,
             self._tools.catalog(task.allowed_tools),
             workspace_files,
+            specialist_failures,
         )
         return cast(
             ExecutionPlan,
-            await self._call("architect_planner", context, ExecutionPlan),
+            await self._call("architect", "planning", context, ExecutionPlan),
         )
 
     async def replanner(
@@ -112,7 +118,10 @@ class AgentRuntime:
             self._tools.catalog(task.allowed_tools),
             workspace_files,
         )
-        return cast(ExecutionPlan, await self._call("architect_planner", context, ExecutionPlan))
+        return cast(
+            ExecutionPlan,
+            await self._call("architect", "replanning", context, ExecutionPlan),
+        )
 
     async def verifier(
         self,
@@ -129,11 +138,15 @@ class AgentRuntime:
             evidence,
             artifacts,
         )
-        return cast(VerificationReport, await self._call("verifier", context, VerificationReport))
+        return cast(
+            VerificationReport,
+            await self._call("reviewer", "verification", context, VerificationReport),
+        )
 
     async def _call(
         self,
         agent_id: str,
+        phase: str,
         context: dict[str, Any],
         output_model: type[AgentProposal]
         | type[ReviewFeedback]
@@ -144,7 +157,7 @@ class AgentRuntime:
         definition = self._agents.get(agent_id)
         result = await self._gateway.structured(
             model=definition.model,
-            system=self._agents.prompt(agent_id),
+            system=self._agents.prompt(agent_id, phase),
             user_content=json.dumps(context, ensure_ascii=False, sort_keys=True),
             output_model=output_model,
         )
@@ -155,14 +168,7 @@ class AgentRuntime:
             output=result.parsed_output.model_dump(mode="json"),
             usage=result.usage,
             source_id=str(uuid4()),
-            phase={
-                "analyst": "analysis",
-                "architect": "architecture",
-                "reviewer": "review",
-                "designer": "design",
-                "architect_planner": "planning",
-                "verifier": "verification",
-            }.get(agent_id, "discussion"),
+            phase=phase,
             message_type="agent_message",
         )
         self._invocations.append(invocation)

@@ -18,6 +18,7 @@ from app.harness.openai_gateway import OpenAIModelGateway
 from app.logging import logger
 from app.models import ConversationMessage
 from app.orchestrator.execution import ExecutionService
+from app.orchestrator.scheduler import SpecialistQuorumError
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskNotFoundError, TaskRepository
@@ -117,13 +118,20 @@ class Coordinator:
                 if path.is_file() and not path.is_symlink()
             )
             tools = build_tool_registry(self._settings, workspace_root)
+            conversation_sink = ConversationService(self._sessions).sink(task_id)
             runtime = AgentRuntime(
                 self._gateway,
                 self._agents,
                 tools,
-                ConversationService(self._sessions).sink(task_id),
+                conversation_sink,
             )
-            orchestrator = OrchestratorService(self._sessions, runtime, self._agents, tools)
+            orchestrator = OrchestratorService(
+                self._sessions,
+                runtime,
+                self._agents,
+                tools,
+                conversation_sink,
+            )
             executor = ExecutionService(
                 self._sessions,
                 runtime,
@@ -153,6 +161,15 @@ class Coordinator:
                     raise RuntimeError(f"orchestrator made no state progress: {state}")
                 if transitions > max_transitions:
                     raise RuntimeError("orchestrator exceeded the bounded state loop")
+        except SpecialistQuorumError as error:
+            error_code, message = safe_error_summary(error)
+            logger().warning("specialist quorum was not reached", error_code=error_code)
+            await self._finish(
+                task_id,
+                TaskState.NEEDS_REVIEW,
+                error_code,
+                details={"error_code": error_code, "message": message},
+            )
         except WorkspacePreconditionError as error:
             error_code, message = safe_error_summary(error)
             logger().warning("task needs workspace review", error_code=error_code)

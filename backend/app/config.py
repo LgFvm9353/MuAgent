@@ -5,7 +5,7 @@ from typing import Literal, cast
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-AgentId = Literal["architect", "architect_planner", "reviewer", "designer", "verifier"]
+AgentId = Literal["architect", "reviewer", "designer"]
 
 
 class Settings(BaseSettings):
@@ -39,10 +39,8 @@ class Settings(BaseSettings):
     def agent_model(self, agent_id: AgentId) -> str:
         field_by_agent: dict[AgentId, str] = {
             "architect": "architect_model",
-            "architect_planner": "architect_model",
             "reviewer": "reviewer_model",
             "designer": "designer_model",
-            "verifier": "verifier_model",
         }
         try:
             field_name = field_by_agent[agent_id]

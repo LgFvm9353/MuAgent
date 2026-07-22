@@ -15,6 +15,9 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
         prompt: str,
         output_model: type[BaseModel],
         model: str,
+        *,
+        stage_prompts: dict[str, str] | None = None,
+        stage_output_models: dict[str, type[BaseModel]] | None = None,
     ) -> AgentDefinition:
         return AgentDefinition(
             agent_id=agent_id,
@@ -27,30 +30,37 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             allowed_tools=frozenset(),
             timeout_seconds=settings.model_timeout_seconds,
             max_retries=2,
+            stage_prompts={stage: prompts_root / path for stage, path in stage_prompts.items()}
+            if stage_prompts
+            else None,
+            stage_output_models=stage_output_models,
         )
 
     return AgentRegistry(
         (
             definition(
                 "architect",
-                "software architecture and execution planning",
+                "software architecture, execution planning, and replanning",
                 "architect/v1.txt",
                 AgentProposal,
                 settings.agent_model("architect"),
-            ),
-            definition(
-                "architect_planner",
-                "software architecture and execution planning",
-                "architect/planner-v1.txt",
-                ExecutionPlan,
-                settings.agent_model("architect_planner"),
+                stage_prompts={
+                    "planning": "architect/planner-v1.txt",
+                    "replanning": "architect/planner-v1.txt",
+                },
+                stage_output_models={
+                    "planning": ExecutionPlan,
+                    "replanning": ExecutionPlan,
+                },
             ),
             definition(
                 "reviewer",
-                "code review and test strategy",
+                "code review, test strategy, and independent verification",
                 "reviewer/v1.txt",
                 ReviewFeedback,
                 settings.agent_model("reviewer"),
+                stage_prompts={"verification": "verifier/v1.txt"},
+                stage_output_models={"verification": VerificationReport},
             ),
             definition(
                 "designer",
@@ -58,13 +68,6 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 "designer/v1.txt",
                 DesignFeedback,
                 settings.agent_model("designer"),
-            ),
-            definition(
-                "verifier",
-                "independent verification",
-                "verifier/v1.txt",
-                VerificationReport,
-                settings.agent_model("verifier"),
             ),
         )
     )

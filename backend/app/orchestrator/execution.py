@@ -127,7 +127,7 @@ class ExecutionService:
                     prompt_version=definition.prompt_version,
                     schema_version=definition.schema_version,
                     model=definition.model,
-                    config_hash=definition.config_hash(),
+                    config_hash=definition.config_hash(invocation.phase),
                     status="succeeded",
                     output=invocation.output,
                 )
