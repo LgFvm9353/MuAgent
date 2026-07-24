@@ -1,4 +1,6 @@
 import asyncio
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -9,14 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from app.agents.definitions import build_agent_registry
+from app.agents.routing import AgentRouter, RouteDecision
 from app.agents.runtime import AgentRuntime, StructuredGateway
 from app.config import Settings
+from app.contracts.agents import ChatAgentReply
 from app.contracts.task import TaskContract
 from app.errors import safe_error_summary
+from app.harness.context import AgentContextBuilder
 from app.harness.model_gateway import ModelGateway
 from app.harness.openai_gateway import OpenAIModelGateway
+from app.harness.registry import AgentDefinition
 from app.logging import logger
-from app.models import ConversationMessage
+from app.models import AgentRun, ConversationMessage
 from app.orchestrator.execution import ExecutionService
 from app.orchestrator.scheduler import SpecialistQuorumError
 from app.orchestrator.service import OrchestratorService
@@ -46,12 +52,10 @@ class Coordinator:
         self._lock = asyncio.Lock()
         self._client: openai.AsyncOpenAI | anthropic.AsyncAnthropic
         self._gateway: StructuredGateway
-        if settings.llm_provider == "openai":
+        if settings.llm_api_key is not None or settings.llm_provider == "openai":
             self._client = openai.AsyncOpenAI(
-                api_key=settings.openai_api_key.get_secret_value()
-                if settings.openai_api_key
-                else None,
-                base_url=settings.openai_base_url,
+                api_key=settings.gateway_api_key.get_secret_value(),
+                base_url=settings.gateway_base_url,
                 max_retries=0,
                 timeout=settings.model_timeout_seconds,
                 http_client=httpx.AsyncClient(trust_env=False),
@@ -75,6 +79,13 @@ class Coordinator:
                 timeout_seconds=settings.model_timeout_seconds,
             )
         self._agents = build_agent_registry(settings, prompts_root)
+        self._router = AgentRouter(self._agents, settings.max_auto_routed_agents)
+
+    def route_chat(self, text: str) -> RouteDecision:
+        return self._router.route(text)
+
+    def agent_definition(self, agent_id: str) -> AgentDefinition:
+        return self._agents.get(agent_id)
 
     async def schedule(self, task_id: UUID) -> None:
         async with self._lock:
@@ -89,6 +100,84 @@ class Coordinator:
                     self._active.pop(task_id, None)
 
             operation.add_done_callback(remove)
+
+    async def schedule_chat(self, run_ids: tuple[UUID, ...], user_text: str) -> None:
+        for run_id in run_ids:
+            operation = asyncio.create_task(
+                self._run_chat_agent(run_id, user_text), name=f"agent-run:{run_id}"
+            )
+            async with self._lock:
+                self._active[run_id] = operation
+
+            def remove(finished: asyncio.Task[None], key: UUID = run_id) -> None:
+                if self._active.get(key) is finished:
+                    self._active.pop(key, None)
+
+            operation.add_done_callback(remove)
+
+    async def _run_chat_agent(self, run_id: UUID, user_text: str) -> None:
+        async with self._sessions() as session:
+            run = await session.get(AgentRun, run_id)
+            if run is None:
+                return
+            run.status = "running"
+            run.started_at = datetime.now(UTC)
+            await session.commit()
+            agent_id = run.agent_id
+            turn_id = run.turn_id
+
+        try:
+            definition = self._agents.get(agent_id)
+            context = AgentContextBuilder().chat(agent_id=agent_id, user_text=user_text)
+            result = await self._gateway.structured(
+                model=definition.model,
+                system=self._agents.prompt(agent_id),
+                user_content=json.dumps(context, ensure_ascii=False, sort_keys=True),
+                output_model=ChatAgentReply,
+            )
+            if result.parsed_output is None:
+                raise RuntimeError("agent returned no chat reply")
+            reply = ChatAgentReply.model_validate(result.parsed_output)
+            async with self._sessions() as session:
+                run = await session.get(AgentRun, run_id)
+                if run is None:
+                    return
+                run.status = "completed"
+                run.output = reply.model_dump(mode="json")
+                run.completed_at = datetime.now(UTC)
+                session.add(
+                    ConversationMessage(
+                        conversation_id=await self._conversation_id_for_turn(session, turn_id),
+                        turn_id=turn_id,
+                        agent_run_id=run_id,
+                        agent_id=agent_id,
+                        role="agent",
+                        message_type="agent_message",
+                        phase="discussion",
+                        summary=reply.text[:1000],
+                        content={"text": reply.text},
+                        source_id=f"agent-run:{run_id}",
+                    )
+                )
+                await session.commit()
+        except Exception as error:
+            error_code, _ = safe_error_summary(error)
+            async with self._sessions() as session:
+                run = await session.get(AgentRun, run_id)
+                if run is not None:
+                    run.status = "failed"
+                    run.error_type = error_code
+                    run.completed_at = datetime.now(UTC)
+                    await session.commit()
+
+    @staticmethod
+    async def _conversation_id_for_turn(session: AsyncSession, turn_id: UUID | None) -> UUID | None:
+        if turn_id is None:
+            return None
+        from app.models import ConversationTurn
+
+        turn = await session.get(ConversationTurn, turn_id)
+        return turn.conversation_id if turn is not None else None
 
     async def cancel(self, task_id: UUID) -> None:
         async with self._lock:

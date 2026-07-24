@@ -7,17 +7,25 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import database_session
 from app.contracts.conversation import (
+    AgentRunResponse,
     ConversationCreate,
     ConversationResponse,
     ConversationTurnCreate,
     ConversationTurnResponse,
 )
-from app.models import Conversation, ConversationMessage, Task
+from app.models import (
+    AgentRun,
+    Conversation,
+    ConversationMessage,
+    ConversationTurn,
+    RoutingDecision,
+    Task,
+)
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskRepository
 
@@ -38,16 +46,19 @@ def _response(conversation: Conversation, latest: Task | None = None) -> Convers
 
 
 async def _latest_task(session: AsyncSession, conversation_id: UUID) -> Task | None:
-    return await session.scalar(
+    result: Task | None = await session.scalar(
         select(Task)
         .where(Task.conversation_id == conversation_id)
         .order_by(Task.created_at.desc())
         .limit(1)
     )
+    return result
 
 
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
-async def create_conversation(payload: ConversationCreate, session: Session) -> ConversationResponse:
+async def create_conversation(
+    payload: ConversationCreate, session: Session
+) -> ConversationResponse:
     conversation = Conversation(title=payload.title.strip())
     session.add(conversation)
     await session.commit()
@@ -119,11 +130,110 @@ async def create_turn(
             state=task.state,
         )
 
+    if payload.text is not None:
+        existing_turn = await session.scalar(
+            select(ConversationTurn).where(
+                ConversationTurn.conversation_id == conversation_id,
+                ConversationTurn.idempotency_key == payload.idempotency_key,
+            )
+        )
+        if existing_turn is not None:
+            runs = list(
+                await session.scalars(select(AgentRun).where(AgentRun.turn_id == existing_turn.id))
+            )
+            return ConversationTurnResponse(
+                turn_id=existing_turn.id,
+                conversation_id=conversation_id,
+                state=existing_turn.status,
+                selected_agents=tuple(run.agent_id for run in runs),
+                agent_runs=tuple(
+                    AgentRunResponse(
+                        id=run.id, agent_id=run.agent_id, model=run.model, status=run.status
+                    )
+                    for run in runs
+                ),
+            )
+
+        decision = request.app.state.coordinator.route_chat(payload.text)
+        turn = ConversationTurn(
+            conversation_id=conversation_id,
+            idempotency_key=payload.idempotency_key,
+            status="escalated" if decision.requires_execution else "running",
+            requires_execution=decision.requires_execution,
+        )
+        session.add(turn)
+        await session.flush()
+        route = RoutingDecision(
+            turn_id=turn.id,
+            source=decision.source,
+            selected_agents=list(decision.agent_ids),
+            confidence=decision.confidence,
+            reason_code=decision.reason_code,
+            mentions=list(decision.mentions),
+        )
+        session.add(route)
+        await session.flush()
+        user_message = ConversationMessage(
+            conversation_id=conversation_id,
+            turn_id=turn.id,
+            routing_decision_id=route.id,
+            agent_id="user",
+            role="user",
+            message_type="user_message",
+            phase="request",
+            summary=payload.text[:1000],
+            content={"text": payload.text},
+            mentions=list(decision.mentions),
+            routing_metadata={
+                "source": decision.source,
+                "confidence": decision.confidence,
+                "reason_code": decision.reason_code,
+            },
+            source_id=f"user:{payload.idempotency_key}",
+        )
+        session.add(user_message)
+        new_runs: list[AgentRun] = []
+        if not decision.requires_execution:
+            for agent_id in decision.agent_ids:
+                definition = request.app.state.coordinator.agent_definition(agent_id)
+                run = AgentRun(
+                    turn_id=turn.id,
+                    agent_id=agent_id,
+                    prompt_version=definition.prompt_version,
+                    schema_version=definition.schema_version,
+                    model=definition.model,
+                    config_hash=definition.config_hash(),
+                    status="queued",
+                )
+                session.add(run)
+                new_runs.append(run)
+        conversation.updated_at = datetime.now(UTC)
+        if conversation.title == "新对话":
+            conversation.title = payload.text[:255]
+        await session.commit()
+        if new_runs:
+            await request.app.state.coordinator.schedule_chat(
+                tuple(run.id for run in new_runs), payload.text
+            )
+        return ConversationTurnResponse(
+            turn_id=turn.id,
+            conversation_id=conversation_id,
+            state=turn.status,
+            route_source=decision.source,
+            selected_agents=decision.agent_ids,
+            agent_runs=tuple(
+                AgentRunResponse(
+                    id=run.id, agent_id=run.agent_id, model=run.model, status=run.status
+                )
+                for run in new_runs
+            ),
+        )
+
+    contract = payload.contract
+    assert contract is not None
     latest = await _latest_task(session, conversation_id)
     if latest is not None and latest.state not in _TERMINAL_VALUES:
         raise HTTPException(status_code=409, detail="conversation_busy")
-
-    contract = payload.contract
     task = Task(
         id=contract.task_id,
         conversation_id=conversation_id,
@@ -170,9 +280,12 @@ async def conversation_messages(
     messages = list(
         await session.scalars(
             select(ConversationMessage)
-            .join(Task, Task.id == ConversationMessage.task_id)
+            .outerjoin(Task, Task.id == ConversationMessage.task_id)
             .where(
-                Task.conversation_id == conversation_id,
+                or_(
+                    ConversationMessage.conversation_id == conversation_id,
+                    Task.conversation_id == conversation_id,
+                ),
                 ConversationMessage.id > after,
             )
             .order_by(ConversationMessage.id)
@@ -183,12 +296,20 @@ async def conversation_messages(
         {
             "id": message.id,
             "task_id": message.task_id,
+            "conversation_id": message.conversation_id,
+            "turn_id": message.turn_id,
+            "agent_run_id": message.agent_run_id,
+            "routing_decision_id": message.routing_decision_id,
+            "handoff_id": message.handoff_id,
+            "reply_to_message_id": message.reply_to_message_id,
             "agent_id": message.agent_id,
             "role": message.role,
             "message_type": message.message_type,
             "phase": message.phase,
             "summary": message.summary,
             "content": message.content,
+            "mentions": message.mentions,
+            "routing_metadata": message.routing_metadata,
             "source_id": message.source_id,
             "created_at": message.created_at,
         }
@@ -208,7 +329,7 @@ async def stream_conversation(
             async with request.app.state.database.session_factory() as stream_session:
                 exists = await stream_session.get(Conversation, conversation_id)
                 if exists is None:
-                    yield "event: error\ndata: {\"detail\":\"conversation not found\"}\n\n"
+                    yield 'event: error\ndata: {"detail":"conversation not found"}\n\n'
                     return
                 rows = list(
                     await stream_session.scalars(
@@ -225,13 +346,25 @@ async def stream_conversation(
                 cursor = message.id
                 payload = {
                     "id": message.id,
-                    "task_id": str(message.task_id),
+                    "task_id": str(message.task_id) if message.task_id else None,
+                    "conversation_id": str(message.conversation_id)
+                    if message.conversation_id
+                    else None,
+                    "turn_id": str(message.turn_id) if message.turn_id else None,
+                    "agent_run_id": str(message.agent_run_id) if message.agent_run_id else None,
+                    "routing_decision_id": (
+                        str(message.routing_decision_id) if message.routing_decision_id else None
+                    ),
+                    "handoff_id": str(message.handoff_id) if message.handoff_id else None,
+                    "reply_to_message_id": message.reply_to_message_id,
                     "agent_id": message.agent_id,
                     "role": message.role,
                     "message_type": message.message_type,
                     "phase": message.phase,
                     "summary": message.summary,
                     "content": message.content,
+                    "mentions": message.mentions,
+                    "routing_metadata": message.routing_metadata,
                     "source_id": message.source_id,
                     "created_at": message.created_at.isoformat(),
                 }

@@ -203,9 +203,12 @@ function Workbench() {
     setBusy(true)
     try {
       const turn = await sendConversationMessage(selected.id, goal)
-      const task = await getTask(turn.task_id)
       const thread = await getConversation(selected.id)
-      setActiveTask(task)
+      if (turn.task_id) {
+        setActiveTask(await getTask(turn.task_id))
+      } else {
+        setActiveTask(null)
+      }
       setSelected(thread)
       setThreads((items) => items.map((item) => item.id === thread.id ? thread : item))
       setEvents([])
@@ -213,7 +216,16 @@ function Workbench() {
       setResult(null)
       const messages = await getConversationMessages(selected.id)
       setConversation(messages)
-      show({ tone: 'success', title: '消息已发送', description: '三位专业 Agent 已开始协作。' })
+      show({
+        tone: turn.state === 'escalated' ? 'warning' : 'success',
+        title: turn.state === 'escalated' ? '需要受控执行' : '消息已发送',
+        description: turn.state === 'escalated'
+          ? '该请求涉及副作用，已阻止聊天 Agent 直接执行。'
+          : `${turn.selected_agents.join('、')} 已开始独立响应。`,
+      })
+      if (!turn.task_id) {
+        window.setTimeout(() => { void refreshSelected() }, 1500)
+      }
       return true
     } catch (cause) {
       show({ tone: 'error', title: '发送失败', description: errorText(cause) })

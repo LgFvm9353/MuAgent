@@ -13,10 +13,21 @@ export interface ConversationThread {
   latest_task_state: TaskState | null
 }
 
+export interface AgentRunSummary {
+  id: string
+  agent_id: WorkspaceAgentId
+  model: string
+  status: WorkspaceAgentStatus | 'queued'
+}
+
 export interface ConversationTurn {
-  task_id: string
+  turn_id: string | null
+  task_id: string | null
   conversation_id: string
-  state: TaskState
+  state: TaskState | 'running' | 'escalated'
+  route_source: 'explicit' | 'rule' | 'model' | 'fallback' | null
+  selected_agents: WorkspaceAgentId[]
+  agent_runs: AgentRunSummary[]
 }
 
 export interface Task {
@@ -41,13 +52,21 @@ export interface TaskEvent {
 
 export interface ConversationMessage {
   id: number
-  task_id: string
+  task_id: string | null
+  conversation_id: string | null
+  turn_id: string | null
+  agent_run_id: string | null
+  routing_decision_id: string | null
+  handoff_id: string | null
+  reply_to_message_id: number | null
   agent_id: string
   role: 'agent' | 'system' | 'tool' | 'user'
   message_type: string
   phase: string
   summary: string
   content: Record<string, unknown>
+  mentions: string[]
+  routing_metadata: Record<string, unknown>
   source_id: string
   created_at: string
 }

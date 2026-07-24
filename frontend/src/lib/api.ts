@@ -75,7 +75,7 @@ export function sendConversationMessage(conversationId: string, goal: string): P
     method: 'POST',
     body: JSON.stringify({
       idempotency_key: crypto.randomUUID(),
-      contract: buildTaskContract(goal),
+      text: goal.trim(),
     }),
   })
 }

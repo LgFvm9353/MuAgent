@@ -146,14 +146,28 @@ class AgentRuntime:
     async def _call(
         self,
         agent_id: str,
-        phase: str,
-        context: dict[str, Any],
-        output_model: type[AgentProposal]
+        phase: str | dict[str, Any],
+        context: dict[str, Any]
+        | type[AgentProposal]
         | type[ReviewFeedback]
         | type[DesignFeedback]
         | type[ExecutionPlan]
         | type[VerificationReport],
+        output_model: type[AgentProposal]
+        | type[ReviewFeedback]
+        | type[DesignFeedback]
+        | type[ExecutionPlan]
+        | type[VerificationReport]
+        | None = None,
     ) -> object:
+        if isinstance(phase, dict):
+            if not isinstance(context, type) or output_model is not None:
+                raise TypeError("legacy agent call requires context and output model")
+            output_model = context
+            context = phase
+            phase = "analysis"
+        if output_model is None or not isinstance(context, dict):
+            raise TypeError("agent call requires context and output model")
         definition = self._agents.get(agent_id)
         result = await self._gateway.structured(
             model=definition.model,

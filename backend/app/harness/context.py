@@ -3,6 +3,27 @@ from typing import Any
 from app.contracts.task import TaskContract
 
 
+class AgentContextBuilder:
+    def chat(
+        self,
+        *,
+        agent_id: str,
+        user_text: str,
+        relevant_history: tuple[dict[str, Any], ...] = (),
+        handoff: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "agent_id": agent_id,
+            "user_message": user_text,
+            "relevant_history": relevant_history,
+            "handoff": handoff,
+            "instruction": (
+                "Respond independently as this agent. Do not claim that tools were executed. "
+                "If real-world changes are required, explain that controlled execution is needed."
+            ),
+        }
+
+
 class ContextBuilder:
     def analyst(self, task: TaskContract) -> dict[str, Any]:
         return {
@@ -80,7 +101,8 @@ class ContextBuilder:
             "workspace": {"files": sorted(workspace_files)},
             "instruction": (
                 "Change only steps required to address verified failures. "
-                "Modify existing files instead of creating them again, then rerun the failed checks."
+                "Modify existing files instead of creating them again, "
+                "then rerun the failed checks."
             ),
         }
 

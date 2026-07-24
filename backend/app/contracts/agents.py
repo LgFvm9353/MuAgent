@@ -5,6 +5,11 @@ from pydantic import Field
 from app.contracts.base import ContractModel
 
 
+class ChatAgentReply(ContractModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    handoff: dict[str, str] | None = None
+
+
 class AgentProposal(ContractModel):
     summary: str = Field(min_length=1, max_length=5_000)
     assumptions: tuple[str, ...] = ()
