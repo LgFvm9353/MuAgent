@@ -1,6 +1,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import asdict
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -28,6 +29,7 @@ from app.models import (
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskNotFoundError, TaskRepository
 from app.services.tasks import TaskService
+from app.workspace.preview import ArtifactPreviewError, list_artifacts, read_artifact
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 Session = Annotated[AsyncSession, Depends(database_session)]
@@ -86,6 +88,55 @@ async def get_task(task_id: UUID, session: Session) -> TaskResponse:
     except TaskNotFoundError as error:
         raise HTTPException(status_code=404, detail="task not found") from error
     return TaskResponse.model_validate(task)
+
+
+class ArtifactResponse(BaseModel):
+    path: str
+    name: str
+    size_bytes: int
+    modified_at: datetime
+    preview_type: str
+
+
+class ArtifactContentResponse(ArtifactResponse):
+    content: str
+
+
+@router.get("/{task_id}/artifacts", response_model=list[ArtifactResponse])
+async def task_artifacts(task_id: UUID, session: Session) -> list[ArtifactResponse]:
+    try:
+        await TaskRepository(session).get(task_id)
+    except TaskNotFoundError as error:
+        raise HTTPException(status_code=404, detail="task not found") from error
+    settings = get_settings()
+    return [ArtifactResponse(**asdict(item)) for item in list_artifacts(settings.workspace_root, str(task_id))]
+
+
+@router.get("/{task_id}/artifacts/content", response_model=ArtifactContentResponse)
+async def task_artifact_content(
+    task_id: UUID,
+    session: Session,
+    path: Annotated[str, Query(min_length=1, max_length=1024)],
+) -> ArtifactContentResponse:
+    try:
+        await TaskRepository(session).get(task_id)
+    except TaskNotFoundError as error:
+        raise HTTPException(status_code=404, detail="task not found") from error
+    try:
+        artifact = read_artifact(get_settings().workspace_root, str(task_id), path)
+    except ArtifactPreviewError as error:
+        status_by_code = {
+            "workspace_not_found": status.HTTP_404_NOT_FOUND,
+            "artifact_not_found": status.HTTP_404_NOT_FOUND,
+            "preview_unsupported": status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            "preview_too_large": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            "preview_not_utf8": status.HTTP_422_UNPROCESSABLE_ENTITY,
+        }
+        raise HTTPException(
+            status_code=status_by_code[error.code],
+            detail=error.code,
+        ) from error
+    return ArtifactContentResponse(**asdict(artifact))
 
 
 class TaskResultResponse(BaseModel):

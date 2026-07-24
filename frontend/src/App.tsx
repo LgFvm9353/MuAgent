@@ -1,7 +1,9 @@
 import { Bot, Menu, Plus, Wifi, WifiOff } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AgentWorkspace } from './components/AgentWorkspace'
 import { Conversation } from './components/Conversation'
 import { ConversationSidebar } from './components/ConversationSidebar'
+import { TaskArtifactsPanel } from './components/TaskArtifactsPanel'
 import { TaskComposer } from './components/TaskComposer'
 import { TaskResultPanel } from './components/TaskResultPanel'
 import { ToastProvider, useToast } from './components/ToastProvider'
@@ -20,6 +22,8 @@ import {
   listConversations,
   sendConversationMessage,
 } from './lib/api'
+import { deriveAgentWorkspace } from './lib/agentWorkspace'
+import { apiDateTimestamp } from './lib/dateTime'
 import { conversationToMessage, eventToMessage } from './lib/messages'
 import type {
   ChatMessage,
@@ -180,7 +184,17 @@ function Workbench() {
   const messages = useMemo<ChatMessage[]>(() => [
     ...events.map(eventToMessage),
     ...conversation.map(conversationToMessage),
-  ].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()), [conversation, events])
+  ].sort((left, right) => apiDateTimestamp(left.createdAt) - apiDateTimestamp(right.createdAt)), [conversation, events])
+  const agentWorkspace = useMemo(
+    () => activeTask
+      ? deriveAgentWorkspace(
+          activeTask,
+          events,
+          conversation.filter((message) => message.task_id === activeTask.id),
+        )
+      : null,
+    [activeTask, conversation, events],
+  )
 
   const running = Boolean(activeTask && !terminal.has(activeTask.state))
 
@@ -263,7 +277,7 @@ function Workbench() {
         <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()}><Plus size={15}/>新建对话</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : streamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
       </header>
       {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div>{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div>}
-      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{result && <details className="mx-4 mb-4"><summary className="cursor-pointer text-sm text-violet-300">查看当前轮运行详情</summary><TaskResultPanel result={result}/></details>}</section>
+      <section className="message-panel">{agentWorkspace && <AgentWorkspace agents={agentWorkspace}/>} {activeTask && <TaskArtifactsPanel taskId={activeTask.id} refreshKey={activeTask.updated_at}/>}<Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{result && <details className="mx-4 mb-4"><summary className="cursor-pointer text-sm text-violet-300">查看当前轮运行详情</summary><TaskResultPanel result={result}/></details>}</section>
       {confirmations.length > 0 && <section className="confirmation-panel">{confirmations.map((confirmation) => <article className="confirmation-card" key={confirmation.call_hash}><div><strong>Executor 请求人工确认</strong><p>{confirmation.tool_name} · {confirmation.risk}</p><p>{confirmation.impact}</p><details><summary>查看工具参数</summary><pre>{JSON.stringify(confirmation.arguments, null, 2)}</pre></details></div><div className="confirmation-actions"><button className="secondary-button" disabled={busy} onClick={() => void decide(confirmation, false)}>拒绝</button><button className="primary-button" disabled={busy} onClick={() => void decide(confirmation, true)}>批准</button></div></article>)}</section>}
       {selected ? <TaskComposer busy={busy} running={running} onSubmit={submit} onCancel={cancel}/> : <div className="p-6 text-center text-sm text-zinc-500">请先新建一个对话。</div>}
     </main>

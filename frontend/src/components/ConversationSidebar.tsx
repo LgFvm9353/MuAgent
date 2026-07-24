@@ -1,4 +1,5 @@
 import { Bot, CircleDot, Plus, X } from 'lucide-react'
+import { parseApiDate } from '../lib/dateTime'
 import type { ConversationThread } from '../types/api'
 
 const labels: Record<string, string> = {
@@ -45,7 +46,7 @@ export function ConversationSidebar({
             <span className="line-clamp-2 text-left text-sm leading-5">{conversation.title}</span>
             <span className="mt-2 flex items-center justify-between text-xs text-zinc-500">
               <span className="flex items-center gap-1"><CircleDot size={11}/>{conversation.latest_task_state ? labels[conversation.latest_task_state] || '进行中' : '空对话'}</span>
-              <time>{new Date(conversation.updated_at).toLocaleDateString('zh-CN')}</time>
+              <time>{parseApiDate(conversation.updated_at).toLocaleDateString('zh-CN')}</time>
             </span>
           </button>)}
     </div>

@@ -108,20 +108,38 @@ class Scheduler:
         task: TaskContract,
         workspace_files: frozenset[str] = frozenset(),
     ) -> DeliberationResult:
+        await self._publish(
+            "architect",
+            "analysis",
+            "Architect 正在分析任务目标与约束。",
+            {"from_agent": "architect", "status": "running"},
+        )
         architecture = await self._runtime.architect(task)
         await self._publish(
             "architect",
             "delegation",
             "@Reviewer 请审查技术风险与测试策略；@Designer 请设计产品与交互方案。",
-            {"from_agent": "architect", "target_agents": ["reviewer", "designer"]},
+            {
+                "from_agent": "architect",
+                "target_agents": ["reviewer", "designer"],
+                "status": "completed",
+            },
         )
 
         async with asyncio.TaskGroup() as group:
             review_task = group.create_task(
-                self._run_specialist("reviewer", self._runtime.reviewer(task, architecture))
+                self._run_specialist(
+                    "reviewer",
+                    "review",
+                    self._runtime.reviewer(task, architecture),
+                )
             )
             design_task = group.create_task(
-                self._run_specialist("designer", self._runtime.designer(task, architecture))
+                self._run_specialist(
+                    "designer",
+                    "design",
+                    self._runtime.designer(task, architecture),
+                )
             )
 
         review_result = review_task.result()
@@ -148,6 +166,7 @@ class Scheduler:
                     if value is not None
                 ],
                 "specialist_failures": list(failures),
+                "status": "running",
             },
         )
         plan = await self._runtime.planner(
@@ -169,8 +188,19 @@ class Scheduler:
     async def _run_specialist(
         self,
         agent_id: str,
+        phase: str,
         operation: Awaitable[ReviewFeedback | DesignFeedback],
     ) -> _SpecialistResult:
+        await self._publish(
+            agent_id,
+            phase,
+            f"{agent_id} 正在处理 Architect 委派的任务。",
+            {
+                "from_agent": "architect",
+                "target_agents": [agent_id],
+                "status": "running",
+            },
+        )
         try:
             value = await operation
         except asyncio.CancelledError:

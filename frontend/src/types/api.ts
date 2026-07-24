@@ -74,6 +74,20 @@ export interface TaskContract {
   failure_policy: string
 }
 
+export interface TaskArtifact {
+  path: string
+  name: string
+  size_bytes: number
+  modified_at: string
+  preview_type: ArtifactPreviewType
+}
+
+export interface TaskArtifactContent extends TaskArtifact {
+  content: string
+}
+
+export type ArtifactPreviewType = 'text' | 'markdown' | 'json' | 'code' | 'unsupported'
+
 export interface TaskResult {
   task: Task
   plan: { steps?: Array<Record<string, unknown>> } | null
@@ -118,3 +132,18 @@ export interface ChatMessage {
 
 export type StreamStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error'
 export type ToastTone = 'success' | 'warning' | 'error'
+
+export type WorkspaceAgentId = 'architect' | 'reviewer' | 'designer'
+export type WorkspaceAgentStatus = 'idle' | 'waiting' | 'running' | 'completed' | 'failed'
+
+export interface WorkspaceAgentState {
+  id: WorkspaceAgentId
+  status: WorkspaceAgentStatus
+  phase: string
+  summary: string
+  startedAt: string | null
+  completedAt: string | null
+  updatedAt: string | null
+}
+
+export type AgentWorkspaceState = Record<WorkspaceAgentId, WorkspaceAgentState>

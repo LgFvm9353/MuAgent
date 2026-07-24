@@ -1,4 +1,4 @@
-import type { ConversationMessage, ConversationThread, ConversationTurn, PendingConfirmation, Task, TaskContract, TaskEvent, TaskResult } from '../types/api'
+import type { ConversationMessage, ConversationThread, ConversationTurn, PendingConfirmation, Task, TaskArtifact, TaskArtifactContent, TaskContract, TaskEvent, TaskResult } from '../types/api'
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -102,6 +102,19 @@ export function getPendingConfirmations(taskId: string, signal?: AbortSignal): P
 
 export function getTaskResult(taskId: string, signal?: AbortSignal): Promise<TaskResult> {
   return request(`/tasks/${taskId}/result`, { signal })
+}
+
+export function getTaskArtifacts(taskId: string, signal?: AbortSignal): Promise<TaskArtifact[]> {
+  return request(`/tasks/${taskId}/artifacts`, { signal })
+}
+
+export function getTaskArtifactContent(
+  taskId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<TaskArtifactContent> {
+  const query = new URLSearchParams({ path })
+  return request(`/tasks/${taskId}/artifacts/content?${query.toString()}`, { signal })
 }
 
 export function decideConfirmation(
