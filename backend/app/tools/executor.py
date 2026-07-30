@@ -39,6 +39,8 @@ class ToolExecutor:
     async def execute(self, task_id: UUID, plan_version: int, step: ExecutionStep) -> ToolExecution:
         definition = self._registry.get(step.tool_name)
         request = definition.input_model.model_validate(step.arguments)
+        if definition.validate_input is not None:
+            definition.validate_input(request)
         started = monotonic()
         async with asyncio.timeout(definition.timeout_seconds):
             output = await definition.handler(request)

@@ -1,0 +1,11 @@
+id: design
+version: 1.0.0
+description: Design product behavior, interaction states, and usability safeguards.
+allowed_agents:
+  - designer
+allowed_tools:
+  - list_workspace_files
+  - read_workspace_file
+required_tools: []
+max_tool_rounds: 6
+max_tool_calls: 10

@@ -1,10 +1,10 @@
 from typing import Any
-from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    AgentInvocationQueueEntry,
     ConversationMessage,
     EvidenceRecordModel,
     ExecutionPlanRecord,
@@ -12,6 +12,7 @@ from app.models import (
     Task,
     VerificationReportModel,
 )
+from app.orchestrator.invocation_queue import InvocationQueueRepository, InvocationRequest
 
 
 class FinalSummaryService:
@@ -90,7 +91,7 @@ class FinalSummaryService:
             "REJECTED": "已拒绝",
             "BUDGET_EXCEEDED": "已超过预算",
         }.get(task.state, task.state)
-        summary = f"{status_text}：{goal}"[:1000]
+        summary = f"{status_text}：{goal}"[:1000]  # noqa: RUF001
         content = {
             "state": task.state,
             "goal": goal,
@@ -102,18 +103,45 @@ class FinalSummaryService:
             "next_action": (
                 "可以在当前对话中继续提出修改要求。"
                 if task.state == "SUCCEEDED"
-                else "请查看失败证据，并在当前对话中补充要求或重新尝试。"
+                else "请查看失败证据，并在当前对话中补充要求或重新尝试。"  # noqa: RUF001
             ),
         }
-        self._session.add(
-            ConversationMessage(
-                task_id=task.id,
-                agent_id="system",
-                role="system",
-                message_type="final_summary",
-                phase="completion",
-                summary=summary,
-                content=content,
-                source_id=source_id,
+        origin = None
+        if task.originating_invocation_id is not None:
+            origin = await self._session.get(
+                AgentInvocationQueueEntry, task.originating_invocation_id
             )
+        message = ConversationMessage(
+            task_id=task.id,
+            conversation_id=task.conversation_id,
+            turn_id=origin.turn_id if origin is not None else None,
+            handoff_id=origin.handoff_id if origin is not None else None,
+            reply_to_message_id=origin.source_message_id if origin is not None else None,
+            agent_id="system",
+            role="system",
+            message_type="final_summary",
+            phase="completion",
+            summary=summary,
+            content=content,
+            source_id=source_id,
         )
+        self._session.add(message)
+        await self._session.flush()
+        if origin is not None:
+            await InvocationQueueRepository(self._session).enqueue(
+                InvocationRequest(
+                    conversation_id=task.conversation_id,
+                    turn_id=origin.turn_id,
+                    task_id=task.id,
+                    source_agent_id="architect",
+                    target_agent_id="reviewer",
+                    source_message_id=message.id,
+                    parent_invocation_id=origin.id,
+                    intent="done_notify",
+                    objective=(
+                        f"Review controlled task {task.id} terminal state "
+                        f"{task.state}: {reason}"
+                    ),
+                    depth=origin.depth + 1,
+                )
+            )

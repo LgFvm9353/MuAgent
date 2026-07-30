@@ -5,10 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Task, ToolCall
+from app.orchestrator.invocation_queue import InvocationQueueRepository
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
 
 ResumeHandler = Callable[[UUID], Awaitable[None]]
+QueueResumeHandler = Callable[[], Awaitable[None]]
 
 
 class RecoveryService:
@@ -43,6 +45,13 @@ class RecoveryService:
             )
             await self._session.commit()
         return tuple(recovered)
+
+    async def recover_invocations(self, schedule: QueueResumeHandler) -> int:
+        recovered = await InvocationQueueRepository(self._session).recover_expired()
+        await self._session.commit()
+        if recovered:
+            await schedule()
+        return recovered
 
     async def _has_uncertain_side_effect(self, task: Task) -> bool:
         if TaskState(task.state) is not TaskState.EXECUTING:

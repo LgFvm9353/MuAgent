@@ -25,6 +25,12 @@ class AgentDefinition:
     mention_aliases: tuple[str, ...] = ()
     routing_keywords: tuple[str, ...] = ()
     handoff_targets: frozenset[str] = frozenset()
+    accepted_handoff_intents: frozenset[str] = frozenset(
+        {"delegate", "question", "review", "revise", "done_notify"}
+    )
+    max_concurrency: int = 1
+    max_handoff_targets: int = 2
+    can_request_execution: bool = False
     enabled: bool = True
     stage_prompts: dict[str, Path] | None = None
     stage_output_models: dict[str, type[BaseModel]] | None = None
@@ -52,6 +58,10 @@ class AgentDefinition:
             "mention_aliases": self.mention_aliases,
             "routing_keywords": self.routing_keywords,
             "handoff_targets": sorted(self.handoff_targets),
+            "accepted_handoff_intents": sorted(self.accepted_handoff_intents),
+            "max_concurrency": self.max_concurrency,
+            "max_handoff_targets": self.max_handoff_targets,
+            "can_request_execution": self.can_request_execution,
             "enabled": self.enabled,
             "timeout_seconds": self.timeout_seconds,
             "max_retries": self.max_retries,
@@ -92,6 +102,18 @@ class AgentRegistry:
             if any(candidate.casefold().lstrip("@") == normalized for candidate in aliases):
                 return definition
         return None
+
+    def validate_handoff(self, source_agent_id: str, target_agent_id: str, intent: str) -> None:
+        source = self.get(source_agent_id)
+        target = self.get(target_agent_id)
+        if source.agent_id == target.agent_id:
+            raise ValueError("agent cannot hand off to itself")
+        if target.agent_id not in source.handoff_targets:
+            raise ValueError(f"handoff from {source.agent_id} to {target.agent_id} is not allowed")
+        if intent not in target.accepted_handoff_intents:
+            raise ValueError(f"agent {target.agent_id} does not accept handoff intent: {intent}")
+        if intent == "execute" and not target.can_request_execution:
+            raise ValueError(f"agent {target.agent_id} cannot accept execution requests")
 
     def prompt(self, agent_id: str, stage: str = "default") -> str:
         return self.get(agent_id).prompt_path_for(stage).read_text(encoding="utf-8")

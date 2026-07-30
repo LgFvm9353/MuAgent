@@ -1,0 +1,54 @@
+# Administrator-managed MCP servers. Every remote tool must be explicitly allowlisted;
+# tools reported by a server but absent here remain unavailable.
+servers:
+  - id: context7
+    enabled: true
+    transport: stdio
+    command: cmd
+    args: ["/c", "npx", "-y", "@upstash/context7-mcp"]
+    env: {}
+    connect_timeout_seconds: 90
+    tools:
+      resolve-library-id:
+        risk: low
+        idempotent: true
+        timeout_seconds: 30
+      query-docs:
+        risk: low
+        idempotent: true
+        timeout_seconds: 60
+
+  - id: playwright
+    enabled: true
+    transport: stdio
+    command: cmd
+    args: ["/c", "npx", "-y", "@executeautomation/playwright-mcp-server"]
+    env: {}
+    connect_timeout_seconds: 90
+    tools:
+      playwright_navigate:
+        # Navigation can reach arbitrary URLs, so it must not be auto-executed.
+        risk: medium
+        idempotent: false
+        timeout_seconds: 90
+      playwright_get_visible_text:
+        risk: low
+        idempotent: true
+        timeout_seconds: 30
+      playwright_get_visible_html:
+        risk: low
+        idempotent: true
+        timeout_seconds: 30
+      playwright_console_logs:
+        risk: low
+        idempotent: true
+        timeout_seconds: 30
+      playwright_screenshot:
+        # The tool can optionally write a PNG to disk.
+        risk: high
+        idempotent: false
+        timeout_seconds: 60
+      playwright_close:
+        risk: low
+        idempotent: true
+        timeout_seconds: 15

@@ -1,0 +1,11 @@
+id: architecture
+version: 1.0.0
+description: Analyze system architecture and implementation boundaries.
+allowed_agents:
+  - architect
+allowed_tools:
+  - list_workspace_files
+  - read_workspace_file
+required_tools: []
+max_tool_rounds: 6
+max_tool_calls: 10

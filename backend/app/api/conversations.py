@@ -26,6 +26,7 @@ from app.models import (
     RoutingDecision,
     Task,
 )
+from app.orchestrator.invocation_queue import InvocationQueueRepository, InvocationRequest
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskRepository
 
@@ -192,29 +193,31 @@ async def create_turn(
             source_id=f"user:{payload.idempotency_key}",
         )
         session.add(user_message)
+        await session.flush()
         new_runs: list[AgentRun] = []
-        if not decision.requires_execution:
-            for agent_id in decision.agent_ids:
-                definition = request.app.state.coordinator.agent_definition(agent_id)
-                run = AgentRun(
-                    turn_id=turn.id,
-                    agent_id=agent_id,
-                    prompt_version=definition.prompt_version,
-                    schema_version=definition.schema_version,
-                    model=definition.model,
-                    config_hash=definition.config_hash(),
-                    status="queued",
+        queued_entries = []
+        queue = InvocationQueueRepository(session)
+        targets = ("architect",) if decision.requires_execution else decision.agent_ids
+        intent = "execute" if decision.requires_execution else "delegate"
+        for agent_id in targets:
+            queued_entries.append(
+                await queue.enqueue(
+                    InvocationRequest(
+                        conversation_id=conversation_id,
+                        turn_id=turn.id,
+                        source_message_id=user_message.id,
+                        target_agent_id=agent_id,
+                        intent=intent,
+                        objective=payload.text,
+                    )
                 )
-                session.add(run)
-                new_runs.append(run)
+            )
         conversation.updated_at = datetime.now(UTC)
         if conversation.title == "新对话":
             conversation.title = payload.text[:255]
         await session.commit()
-        if new_runs:
-            await request.app.state.coordinator.schedule_chat(
-                tuple(run.id for run in new_runs), payload.text
-            )
+        if queued_entries:
+            await request.app.state.coordinator.schedule_invocations(conversation_id)
         return ConversationTurnResponse(
             turn_id=turn.id,
             conversation_id=conversation_id,
@@ -334,9 +337,12 @@ async def stream_conversation(
                 rows = list(
                     await stream_session.scalars(
                         select(ConversationMessage)
-                        .join(Task, Task.id == ConversationMessage.task_id)
+                        .outerjoin(Task, Task.id == ConversationMessage.task_id)
                         .where(
-                            Task.conversation_id == conversation_id,
+                            or_(
+                                ConversationMessage.conversation_id == conversation_id,
+                                Task.conversation_id == conversation_id,
+                            ),
                             ConversationMessage.id > cursor,
                         )
                         .order_by(ConversationMessage.id)

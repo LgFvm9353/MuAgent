@@ -47,12 +47,22 @@ export function conversationToMessage(message: ConversationMessage): ChatMessage
     ? label
     : label?.[message.phase] || message.agent_id
   const isUser = message.role === 'user'
-  const isFinal = message.message_type === 'final_summary'
+  const isFinal = message.message_type === 'final_summary' || message.message_type === 'collaboration_result'
+  const collaborationCopy: Record<string, string> = {
+    parallel_started: '多 Agent · 并行分析',
+    synthesis_started: 'Lead · 汇总中',
+    handoff_requested: 'Agent · 协作交接',
+    handoff_rejected: 'Agent · 交接已拒绝',
+    collaboration_failed: '多 Agent · 协作失败',
+  }
+  const fullText = typeof message.content.text === 'string'
+    ? message.content.text
+    : message.summary
   return {
     id: `message-${message.id}`,
     role: isUser ? 'user' : 'agent',
-    title: isUser ? undefined : isFinal ? '本轮最终结果' : agentTitle,
-    content: message.summary,
+    title: isUser ? undefined : isFinal ? '团队最终答案' : collaborationCopy[message.message_type] || agentTitle,
+    content: fullText,
     createdAt: message.created_at,
     tone: isFinal
       ? message.content.state === 'SUCCEEDED' ? 'success' : 'warning'

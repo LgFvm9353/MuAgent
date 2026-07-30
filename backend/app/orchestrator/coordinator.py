@@ -24,6 +24,7 @@ from app.harness.registry import AgentDefinition
 from app.logging import logger
 from app.models import AgentRun, ConversationMessage
 from app.orchestrator.execution import ExecutionService
+from app.orchestrator.queue_processor import QueueProcessor
 from app.orchestrator.scheduler import SpecialistQuorumError
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
@@ -80,6 +81,14 @@ class Coordinator:
             )
         self._agents = build_agent_registry(settings, prompts_root)
         self._router = AgentRouter(self._agents, settings.max_auto_routed_agents)
+        self._queue_processor = QueueProcessor(
+            sessions,
+            self._gateway,
+            self._agents,
+            settings,
+            self.schedule,
+            lease_seconds=max(settings.model_timeout_seconds * 2, 120),
+        )
 
     def route_chat(self, text: str) -> RouteDecision:
         return self._router.route(text)
@@ -98,6 +107,22 @@ class Coordinator:
             def remove(finished: asyncio.Task[None]) -> None:
                 if self._active.get(task_id) is finished:
                     self._active.pop(task_id, None)
+
+            operation.add_done_callback(remove)
+
+    async def schedule_invocations(self, conversation_id: UUID) -> None:
+        async with self._lock:
+            current = self._active.get(conversation_id)
+            if current is not None and not current.done():
+                return
+            operation = asyncio.create_task(
+                self._queue_processor.drain(), name=f"conversation-queue:{conversation_id}"
+            )
+            self._active[conversation_id] = operation
+
+            def remove(finished: asyncio.Task[None]) -> None:
+                if self._active.get(conversation_id) is finished:
+                    self._active.pop(conversation_id, None)
 
             operation.add_done_callback(remove)
 
@@ -285,7 +310,16 @@ class Coordinator:
                 details={"error_code": error_code, "message": message},
             )
         finally:
-            clear_contextvars()
+            try:
+                async with self._sessions() as session:
+                    from app.models import Task
+
+                    task = await session.get(Task, task_id)
+                    conversation_id = task.conversation_id if task is not None else None
+                if conversation_id is not None:
+                    await self._queue_processor.drain()
+            finally:
+                clear_contextvars()
 
     async def _contract(self, task_id: UUID) -> TaskContract:
         async with self._sessions() as session:

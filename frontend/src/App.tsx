@@ -7,6 +7,7 @@ import { TaskArtifactsPanel } from './components/TaskArtifactsPanel'
 import { TaskComposer } from './components/TaskComposer'
 import { TaskResultPanel } from './components/TaskResultPanel'
 import { ToastProvider, useToast } from './components/ToastProvider'
+import { useConversationStream } from './hooks/useConversationStream'
 import { useTaskStream } from './hooks/useTaskStream'
 import {
   ApiError,
@@ -29,6 +30,7 @@ import type {
   ChatMessage,
   ConversationMessage,
   ConversationThread,
+  ConversationTurn,
   PendingConfirmation,
   Task,
   TaskEvent,
@@ -49,6 +51,8 @@ function Workbench() {
   const [activeTask, setActiveTask] = useState<Task | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
+  const [pendingTurn, setPendingTurn] = useState<ConversationTurn | null>(null)
+  const [clock, setClock] = useState(() => Date.now())
   const [confirmations, setConfirmations] = useState<PendingConfirmation[]>([])
   const [result, setResult] = useState<TaskResult | null>(null)
   const [loading, setLoading] = useState(true)
@@ -57,6 +61,14 @@ function Workbench() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const loadGeneration = useRef(0)
   const loadController = useRef<AbortController | null>(null)
+  const pendingStartedAt = useRef(0)
+
+  useEffect(() => {
+    if (!pendingTurn) return
+    setClock(Date.now())
+    const timer = window.setInterval(() => setClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [pendingTurn])
 
   const loadThreads = useCallback(async () => {
     setLoading(true)
@@ -82,6 +94,7 @@ function Workbench() {
     setSelected(thread)
     setEvents([])
     setConversation([])
+    setPendingTurn(null)
     setConfirmations([])
     setResult(null)
     setError(null)
@@ -168,9 +181,38 @@ function Workbench() {
 
   const updateMessage = useCallback((message: ConversationMessage) => {
     setConversation((items) => items.some((item) => item.id === message.id) ? items : [...items, message])
+    if (message.turn_id) {
+      setPendingTurn((turn) => {
+        if (!turn || turn.turn_id !== message.turn_id) return turn
+        if (message.message_type === 'collaboration_result' || message.message_type === 'collaboration_failed') {
+          return null
+        }
+        if (!message.agent_run_id || !['agent_message', 'agent_failed'].includes(message.message_type)) {
+          return turn
+        }
+        const remaining = turn.agent_runs.filter((run) => run.id !== message.agent_run_id)
+        if (remaining.length === 0 && turn.synthesize) {
+          return { ...turn, agent_runs: [] }
+        }
+        return remaining.length === 0 ? null : { ...turn, agent_runs: remaining }
+      })
+    }
   }, [])
 
-  const streamStatus = useTaskStream({
+  const conversationStreamStatus = useConversationStream({
+    conversationId: selected?.id || null,
+    after: conversation.at(-1)?.id || 0,
+    active: Boolean(selected && !loading),
+    onMessage: updateMessage,
+    onWarning: () => show({
+      tone: 'warning',
+      title: '对话实时连接中断',
+      description: '系统正在自动重连。',
+      dedupeKey: 'conversation-sse-warning',
+    }),
+  })
+
+  const taskStreamStatus = useTaskStream({
     taskId: activeTask?.id || null,
     after: events.at(-1)?.id || 0,
     messageAfter: conversation.filter((message) => message.task_id === activeTask?.id).at(-1)?.id || 0,
@@ -181,10 +223,25 @@ function Workbench() {
     onWarning: () => show({ tone: 'warning', title: '实时连接中断', description: '系统正在自动重连。', dedupeKey: 'sse-warning' }),
   })
 
-  const messages = useMemo<ChatMessage[]>(() => [
-    ...events.map(eventToMessage),
-    ...conversation.map(conversationToMessage),
-  ].sort((left, right) => apiDateTimestamp(left.createdAt) - apiDateTimestamp(right.createdAt)), [conversation, events])
+  const messages = useMemo<ChatMessage[]>(() => {
+    const elapsedSeconds = pendingStartedAt.current
+      ? Math.max(0, Math.floor((clock - pendingStartedAt.current) / 1000))
+      : 0
+    const pendingMessages: ChatMessage[] = pendingTurn?.agent_runs.map((run) => ({
+      id: `pending-${run.id}`,
+      role: 'agent',
+      title: `${run.agent_id} · ${run.model}`,
+      content: `${run.agent_id} 正在生成回复，已等待 ${elapsedSeconds} 秒…`,
+      createdAt: new Date(pendingStartedAt.current || clock).toISOString(),
+      agentId: run.agent_id,
+      phase: 'running',
+    })) || []
+    return [
+      ...events.map(eventToMessage),
+      ...conversation.map(conversationToMessage),
+      ...pendingMessages,
+    ].sort((left, right) => apiDateTimestamp(left.createdAt) - apiDateTimestamp(right.createdAt))
+  }, [clock, conversation, events, pendingTurn])
   const agentWorkspace = useMemo(
     () => activeTask
       ? deriveAgentWorkspace(
@@ -203,6 +260,10 @@ function Workbench() {
     setBusy(true)
     try {
       const turn = await sendConversationMessage(selected.id, goal)
+      if (turn.agent_runs.length > 0) {
+        pendingStartedAt.current = Date.now()
+        setPendingTurn(turn)
+      }
       const thread = await getConversation(selected.id)
       if (turn.task_id) {
         setActiveTask(await getTask(turn.task_id))
@@ -221,10 +282,14 @@ function Workbench() {
         title: turn.state === 'escalated' ? '需要受控执行' : '消息已发送',
         description: turn.state === 'escalated'
           ? '该请求涉及副作用，已阻止聊天 Agent 直接执行。'
-          : `${turn.selected_agents.join('、')} 已开始独立响应。`,
+          : turn.collaboration_mode === 'parallel' && turn.selected_agents.length > 1
+            ? `${turn.selected_agents.join('、')} 已开始并行独立分析。`
+            : `${turn.selected_agents.join('、')} 已开始串行响应。`,
       })
       if (!turn.task_id) {
-        window.setTimeout(() => { void refreshSelected() }, 1500)
+        for (const delay of [500, 1500, 4000, 8000]) {
+          window.setTimeout(() => { void refreshSelected() }, delay)
+        }
       }
       return true
     } catch (cause) {
@@ -279,16 +344,17 @@ function Workbench() {
     } finally { setBusy(false) }
   }
 
-  const connected = streamStatus === 'connected'
+  const connected = conversationStreamStatus === 'connected'
+    || taskStreamStatus === 'connected'
   return <div className="app-shell">
     <ConversationSidebar conversations={threads} selectedId={selected?.id || null} open={sidebarOpen} onClose={() => setSidebarOpen(false)} onSelect={(thread) => void loadSelected(thread)} onNew={() => void newConversation()}/>
     {sidebarOpen && <button className="sidebar-overlay" onClick={() => setSidebarOpen(false)} aria-label="关闭对话列表"/>}
     <main className="main-panel">
       <header className="topbar">
         <div className="flex items-center gap-3"><button className="icon-button lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="打开对话列表"><Menu size={19}/></button><div className="brand-mark"><Bot size={19}/></div><div><h1>Agent Console</h1><p>多 Agent 持续对话工作台</p></div></div>
-        <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()}><Plus size={15}/>新建对话</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : streamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
+        <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()}><Plus size={15}/>新建对话</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : conversationStreamStatus === 'reconnecting' || taskStreamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
       </header>
-      {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div>{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div>}
+      {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div><div className="flex items-center gap-2">{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div></div>}
       <section className="message-panel">{agentWorkspace && <AgentWorkspace agents={agentWorkspace}/>} {activeTask && <TaskArtifactsPanel taskId={activeTask.id} refreshKey={activeTask.updated_at}/>}<Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{result && <details className="mx-4 mb-4"><summary className="cursor-pointer text-sm text-violet-300">查看当前轮运行详情</summary><TaskResultPanel result={result}/></details>}</section>
       {confirmations.length > 0 && <section className="confirmation-panel">{confirmations.map((confirmation) => <article className="confirmation-card" key={confirmation.call_hash}><div><strong>Executor 请求人工确认</strong><p>{confirmation.tool_name} · {confirmation.risk}</p><p>{confirmation.impact}</p><details><summary>查看工具参数</summary><pre>{JSON.stringify(confirmation.arguments, null, 2)}</pre></details></div><div className="confirmation-actions"><button className="secondary-button" disabled={busy} onClick={() => void decide(confirmation, false)}>拒绝</button><button className="primary-button" disabled={busy} onClick={() => void decide(confirmation, true)}>批准</button></div></article>)}</section>}
       {selected ? <TaskComposer busy={busy} running={running} onSubmit={submit} onCancel={cancel}/> : <div className="p-6 text-center text-sm text-zinc-500">请先新建一个对话。</div>}

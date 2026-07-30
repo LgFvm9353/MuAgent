@@ -4,10 +4,21 @@ from pydantic import Field
 
 from app.contracts.base import ContractModel
 
+HandoffIntent = Literal["delegate", "question", "review", "revise", "execute", "done_notify"]
+
+
+class AgentHandoff(ContractModel):
+    target_agent_id: str = Field(min_length=1, max_length=100)
+    intent: HandoffIntent = "delegate"
+    objective: str = Field(min_length=1, max_length=4_000)
+    context_summary: str = Field(default="", max_length=4_000)
+    expected_output: str = Field(default="", max_length=2_000)
+    reply_required: bool = True
+
 
 class ChatAgentReply(ContractModel):
     text: str = Field(min_length=1, max_length=20_000)
-    handoff: dict[str, str] | None = None
+    handoffs: tuple[AgentHandoff, ...] = ()
 
 
 class AgentProposal(ContractModel):

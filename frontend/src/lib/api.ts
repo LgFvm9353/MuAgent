@@ -70,7 +70,10 @@ export function getConversationMessages(conversationId: string, signal?: AbortSi
   return request(`/conversations/${conversationId}/messages?after=0&limit=1000`, { signal })
 }
 
-export function sendConversationMessage(conversationId: string, goal: string): Promise<ConversationTurn> {
+export function sendConversationMessage(
+  conversationId: string,
+  goal: string,
+): Promise<ConversationTurn> {
   return request(`/conversations/${conversationId}/messages`, {
     method: 'POST',
     body: JSON.stringify({

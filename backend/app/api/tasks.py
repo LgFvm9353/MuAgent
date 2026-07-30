@@ -109,7 +109,10 @@ async def task_artifacts(task_id: UUID, session: Session) -> list[ArtifactRespon
     except TaskNotFoundError as error:
         raise HTTPException(status_code=404, detail="task not found") from error
     settings = get_settings()
-    return [ArtifactResponse(**asdict(item)) for item in list_artifacts(settings.workspace_root, str(task_id))]
+    return [
+        ArtifactResponse(**asdict(item))
+        for item in list_artifacts(settings.workspace_root, str(task_id))
+    ]
 
 
 @router.get("/{task_id}/artifacts/content", response_model=ArtifactContentResponse)

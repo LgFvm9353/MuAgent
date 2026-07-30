@@ -58,6 +58,18 @@ class ConversationTurn(Base, TimestampMixin):
         Uuid(as_uuid=True, native_uuid=False), nullable=False
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="routing")
+    collaboration_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="parallel"
+    )
+    collaboration_phase: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="routing"
+    )
+    synthesize: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    lead_agent_id: Mapped[str | None] = mapped_column(String(100))
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_reason: Mapped[str | None] = mapped_column(String(100))
     requires_execution: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     task_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("tasks.id", ondelete="SET NULL"), index=True
@@ -94,13 +106,73 @@ class HandoffRecord(Base, TimestampMixin):
     )
     source_agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
     target_agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    objective: Mapped[str] = mapped_column(String(1000), nullable=False)
+    intent: Mapped[str] = mapped_column(String(32), nullable=False, default="delegate")
+    objective: Mapped[str] = mapped_column(String(4000), nullable=False)
     context_summary: Mapped[str] = mapped_column(String(4000), nullable=False)
     source_message_id: Mapped[int | None] = mapped_column(
         ForeignKey("conversation_messages.id", ondelete="SET NULL")
     )
+    parent_handoff_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("handoff_records.id", ondelete="SET NULL"), index=True
+    )
+    completed_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversation_messages.id", ondelete="SET NULL")
+    )
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="requested")
     rejection_reason: Mapped[str | None] = mapped_column(String(255))
+
+
+class AgentInvocationQueueEntry(Base, TimestampMixin):
+    __tablename__ = "agent_invocation_queue"
+    id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
+    )
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    turn_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True, native_uuid=False), index=True
+    )
+    source_agent_id: Mapped[str | None] = mapped_column(String(100))
+    target_agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversation_messages.id", ondelete="SET NULL")
+    )
+    handoff_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("handoff_records.id", ondelete="SET NULL"), index=True
+    )
+    parent_invocation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_invocation_queue.id", ondelete="SET NULL"), index=True
+    )
+    intent: Mapped[str] = mapped_column(String(32), nullable=False)
+    objective: Mapped[str] = mapped_column(String(4000), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dedup_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_type: Mapped[str | None] = mapped_column(String(100))
+    __table_args__ = (
+        Index(
+            "ix_invocation_queue_claim",
+            "conversation_id",
+            "target_agent_id",
+            "status",
+            "available_at",
+        ),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
 
 
 class Task(Base, TimestampMixin):
@@ -110,6 +182,9 @@ class Task(Base, TimestampMixin):
     )
     conversation_id: Mapped[UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    originating_invocation_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True, native_uuid=False), unique=True, index=True
     )
     trace_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True, native_uuid=False), nullable=False, index=True
@@ -149,6 +224,25 @@ class AgentRun(Base, TimestampMixin):
     handoff_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("handoff_records.id", ondelete="SET NULL"), index=True
     )
+    invocation_queue_entry_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_invocation_queue.id", ondelete="SET NULL"), unique=True, index=True
+    )
+    parent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    intent: Mapped[str | None] = mapped_column(String(32))
+    phase: Mapped[str | None] = mapped_column(String(32))
+    role: Mapped[str | None] = mapped_column(String(32))
+    skill_id: Mapped[str | None] = mapped_column(String(64))
+    skill_version: Mapped[str | None] = mapped_column(String(32))
+    skill_hash: Mapped[str | None] = mapped_column(String(64))
+    tool_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    resume_state: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    lease_owner: Mapped[str | None] = mapped_column(String(100))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
     schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -249,14 +343,33 @@ class ToolCall(Base, TimestampMixin):
     id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
     )
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
-    step_id: Mapped[UUID] = mapped_column(ForeignKey("execution_steps.id"), index=True)
-    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), index=True
+    )
+    step_id: Mapped[UUID | None] = mapped_column(ForeignKey("execution_steps.id"), index=True)
+    turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
+    )
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="local")
+    server_id: Mapped[str | None] = mapped_column(String(100))
+    risk: Mapped[str] = mapped_column(String(32), nullable=False, default="low")
     arguments: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    arguments_hash: Mapped[str | None] = mapped_column(String(64))
+    schema_hash: Mapped[str | None] = mapped_column(String(64))
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    timeout_seconds: Mapped[float | None] = mapped_column(Float)
+    side_effect_state: Mapped[str | None] = mapped_column(String(32))
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     error_type: Mapped[str | None] = mapped_column(String(100))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Confirmation(Base, TimestampMixin):
@@ -264,13 +377,26 @@ class Confirmation(Base, TimestampMixin):
     id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
     )
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
-    plan_id: Mapped[UUID] = mapped_column(ForeignKey("execution_plans.id", ondelete="CASCADE"))
+    task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), index=True
+    )
+    plan_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("execution_plans.id", ondelete="CASCADE"), index=True
+    )
+    turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
+    )
+    tool_call_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tool_calls.id", ondelete="CASCADE"), index=True
+    )
     call_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    approved: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    decided_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="decided")
+    approved: Mapped[bool | None] = mapped_column(Boolean)
+    decided_by: Mapped[str | None] = mapped_column(String(100))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
         UniqueConstraint("task_id", "plan_id", "call_hash"),
+        UniqueConstraint("tool_call_id", "call_hash"),
         {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
     )
 
@@ -280,8 +406,19 @@ class EvidenceRecordModel(Base, TimestampMixin):
     id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
     )
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
-    step_id: Mapped[UUID] = mapped_column(ForeignKey("execution_steps.id"), index=True)
+    task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), index=True
+    )
+    step_id: Mapped[UUID | None] = mapped_column(ForeignKey("execution_steps.id"), index=True)
+    turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
+    )
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    tool_call_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tool_calls.id", ondelete="SET NULL"), index=True
+    )
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     sha256: Mapped[str | None] = mapped_column(String(64))
@@ -303,6 +440,15 @@ class AuditEvent(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     task_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("tasks.id", ondelete="CASCADE"), index=True
+    )
+    turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
+    )
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agent_runs.id", ondelete="SET NULL"), index=True
+    )
+    tool_call_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("tool_calls.id", ondelete="SET NULL"), index=True
     )
     trace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True, native_uuid=False), index=True)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)

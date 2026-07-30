@@ -51,7 +51,12 @@ def upgrade() -> None:
         )
     )
     op.execute(sa.text("UPDATE tasks SET conversation_id = id WHERE conversation_id IS NULL"))
-    op.alter_column("tasks", "conversation_id", existing_type=sa.Uuid(native_uuid=False), nullable=False)
+    op.alter_column(
+        "tasks",
+        "conversation_id",
+        existing_type=sa.Uuid(native_uuid=False),
+        nullable=False,
+    )
     op.create_index("ix_tasks_conversation_id", "tasks", ["conversation_id"])
     op.create_foreign_key(
         "fk_tasks_conversation_id_conversations",

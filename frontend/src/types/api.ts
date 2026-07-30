@@ -13,19 +13,52 @@ export interface ConversationThread {
   latest_task_state: TaskState | null
 }
 
+export type CollaborationMode = 'parallel' | 'serial'
+export type CollaborationPhase =
+  | 'routing' | 'parallel' | 'serial' | 'handoff' | 'synthesis'
+  | 'waiting_confirmation' | 'completed' | 'failed' | 'needs_review'
+
+export interface SkillSummary {
+  id: string
+  version: string
+  description: string
+  allowed_agents: WorkspaceAgentId[]
+}
+
+export interface McpServerStatus {
+  id: string
+  transport: 'stdio' | 'streamable_http'
+  enabled: boolean
+  status: 'disconnected' | 'connecting' | 'healthy' | 'unhealthy'
+}
+
+export interface ToolCallSummary {
+  id: string
+  agent_run_id: string | null
+  canonical_tool_id: string
+  source: 'local' | 'mcp'
+  risk: 'low' | 'medium' | 'high'
+  status: string
+  arguments: Record<string, unknown>
+}
+
 export interface AgentRunSummary {
   id: string
   agent_id: WorkspaceAgentId
   model: string
-  status: WorkspaceAgentStatus | 'queued'
+  status: WorkspaceAgentStatus | 'queued' | 'waiting_confirmation' | 'cancelled'
+  phase: CollaborationPhase | null
+  skill_id: string | null
 }
 
 export interface ConversationTurn {
   turn_id: string | null
   task_id: string | null
   conversation_id: string
-  state: TaskState | 'running' | 'escalated'
+  state: TaskState | 'running' | 'completed' | 'failed' | 'escalated'
   route_source: 'explicit' | 'rule' | 'model' | 'fallback' | null
+  collaboration_mode: CollaborationMode | null
+  synthesize: boolean
   selected_agents: WorkspaceAgentId[]
   agent_runs: AgentRunSummary[]
 }

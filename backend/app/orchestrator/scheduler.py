@@ -118,7 +118,7 @@ class Scheduler:
         await self._publish(
             "architect",
             "delegation",
-            "@Reviewer 请审查技术风险与测试策略；@Designer 请设计产品与交互方案。",
+            "@Reviewer 请审查技术风险与测试策略；@Designer 请设计产品与交互方案。",  # noqa: RUF001
             {
                 "from_agent": "architect",
                 "target_agents": ["reviewer", "designer"],
@@ -157,7 +157,7 @@ class Scheduler:
         await self._publish(
             "architect",
             "synthesis",
-            "已收到专家结果，Architect 正在汇总执行计划。",
+            "已收到专家结果，Architect 正在汇总执行计划。",  # noqa: RUF001
             {
                 "from_agent": "architect",
                 "completed_agents": [
@@ -206,7 +206,9 @@ class Scheduler:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            summary = f"{agent_id} 执行失败，协作流程将按法定人数规则继续。"
+            summary = (
+                f"{agent_id} 执行失败，协作流程将按法定人数规则继续。"  # noqa: RUF001
+            )
             await self._publish(
                 agent_id,
                 "specialist_failed",

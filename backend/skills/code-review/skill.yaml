@@ -1,0 +1,12 @@
+id: code-review
+version: 1.0.0
+description: Review code for correctness, security, regressions, and tests.
+allowed_agents:
+  - reviewer
+allowed_tools:
+  - list_workspace_files
+  - read_workspace_file
+  - run_allowlisted_check
+required_tools: []
+max_tool_rounds: 6
+max_tool_calls: 10

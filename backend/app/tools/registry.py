@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.contracts.task import RiskLevel
+from app.tools.contracts import ToolSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,16 +21,28 @@ class ToolDefinition[InputT: BaseModel, OutputT: BaseModel]:
     handler: Callable[[InputT], Awaitable[OutputT]]
     validate_input: Callable[[InputT], None] | None = None
     planning_constraints: dict[str, Any] | None = None
+    input_json_schema: dict[str, Any] | None = None
+    source: ToolSource = ToolSource.LOCAL
+    canonical_id: str | None = None
 
-    def anthropic_schema(self) -> dict[str, Any]:
+    @property
+    def canonical_tool_id(self) -> str:
+        return self.canonical_id or f"{self.source.value}.{self.name}"
+
+    def input_schema(self) -> dict[str, Any]:
+        if self.input_json_schema is not None:
+            return self.input_json_schema
         schema = self.input_model.model_json_schema()
         schema["additionalProperties"] = False
         properties = schema.get("properties", {})
         schema["required"] = sorted(properties)
+        return schema
+
+    def anthropic_schema(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": schema,
+            "input_schema": self.input_schema(),
             "strict": True,
         }
 
@@ -63,5 +76,12 @@ class ToolRegistry:
         except KeyError as error:
             raise UnknownToolError(name) from error
 
+    def names(self, *, source: ToolSource | None = None) -> frozenset[str]:
+        return frozenset(
+            name
+            for name, definition in self._tools.items()
+            if source is None or definition.source is source
+        )
+
     def catalog(self, allowed: frozenset[str]) -> tuple[dict[str, Any], ...]:
-        return tuple(self._tools[name].planning_schema() for name in sorted(allowed))
+        return tuple(self.get(name).planning_schema() for name in sorted(allowed))

@@ -21,6 +21,16 @@ from app.tools.file_tools import (
 from app.tools.registry import ToolDefinition, ToolRegistry
 from app.workspace.paths import Workspace
 
+DEFAULT_LOCAL_TOOL_NAMES = frozenset(
+    {
+        "list_workspace_files",
+        "read_workspace_file",
+        "create_workspace_file",
+        "modify_workspace_file",
+        "run_allowlisted_check",
+    }
+)
+
 
 def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistry:
     workspace = Workspace(workspace_root)
@@ -116,9 +126,7 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
             max_output_bytes=1024 * 1024,
             handler=checks.run,
             validate_input=checks.validate_request,
-            planning_constraints={
-                "allowed_command_arguments": checks.planning_constraints()
-            },
+            planning_constraints={"allowed_command_arguments": checks.planning_constraints()},
         )
     )
     return registry

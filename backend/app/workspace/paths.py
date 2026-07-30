@@ -21,7 +21,13 @@ class Workspace:
 
     def resolve(self, relative_path: str, *, must_exist: bool) -> Path:
         candidate = Path(relative_path)
-        if candidate.is_absolute() or candidate.anchor or ".." in candidate.parts or not candidate.parts:
+        invalid_path = (
+            candidate.is_absolute()
+            or bool(candidate.anchor)
+            or ".." in candidate.parts
+            or not candidate.parts
+        )
+        if invalid_path:
             raise WorkspaceViolationError("path must be relative and cannot traverse parents")
         raw = self.root / candidate
         if not raw.is_relative_to(self.root):

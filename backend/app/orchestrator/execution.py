@@ -401,7 +401,7 @@ class ExecutionService:
                     role="tool",
                     message_type="tool_failed" if check_failed else "tool_result",
                     phase="execution",
-                    summary=f"{step.tool_name} 检查未通过，正在验证失败证据。"
+                    summary=f"{step.tool_name} 检查未通过，正在验证失败证据。"  # noqa: RUF001
                     if check_failed
                     else f"{step.tool_name} 执行完成。",
                     content={

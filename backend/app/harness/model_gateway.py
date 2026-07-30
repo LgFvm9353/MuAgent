@@ -7,6 +7,12 @@ from typing import Any, Protocol, TypeVar, cast
 import anthropic
 from pydantic import BaseModel
 
+from app.harness.structured_tools import (
+    anthropic_text,
+    parse_structured_output,
+    structured_output_system,
+)
+
 OutputT = TypeVar("OutputT", bound=BaseModel)
 
 
@@ -46,7 +52,7 @@ class ModelResult:
     usage: ModelUsage
 
 
-class ToolExecutor(Protocol):
+class ModelToolCallPort(Protocol):
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
 
@@ -113,6 +119,41 @@ class ModelGateway:
             usage=self._usage(response, started, retry_count=attempt),
         )
 
+    async def structured_with_tools(
+        self,
+        *,
+        model: str,
+        system: str,
+        user_content: str,
+        output_model: type[OutputT],
+        tools: tuple[dict[str, Any], ...],
+        executor: ModelToolCallPort,
+        max_tool_rounds: int = 6,
+        max_tokens: int = 16_000,
+        effort: str = "high",
+    ) -> ModelResult:
+        if not tools:
+            return await self.structured(
+                model=model,
+                system=system,
+                user_content=user_content,
+                output_model=output_model,
+                max_tokens=max_tokens,
+                effort=effort,
+            )
+        result = await self.tool_loop(
+            model=model,
+            system=structured_output_system(system, output_model),
+            messages=[{"role": "user", "content": user_content}],
+            tools=tools,
+            executor=executor,
+            max_tool_rounds=max_tool_rounds,
+            max_tokens=max_tokens,
+            effort=effort,
+        )
+        parsed = parse_structured_output(anthropic_text(result.content), output_model)
+        return ModelResult(result.content, parsed, result.usage)
+
     async def streaming(
         self,
         *,
@@ -168,7 +209,7 @@ class ModelGateway:
         system: str,
         messages: list[dict[str, Any]],
         tools: tuple[dict[str, Any], ...],
-        executor: ToolExecutor,
+        executor: ModelToolCallPort,
         max_tool_rounds: int = 10,
         max_tokens: int = 64_000,
         effort: str = "high",
@@ -233,7 +274,7 @@ class ModelGateway:
                         "content": f"Tool failed: {type(error).__name__}",
                     }
 
-            results = await asyncio.gather(*(execute(block) for block in tool_uses))
+            results = [await execute(block) for block in tool_uses]
             conversation.append({"role": "user", "content": results})
         raise PermanentModelError("tool loop round limit exceeded")
 
