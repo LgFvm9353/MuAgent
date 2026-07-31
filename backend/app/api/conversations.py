@@ -209,7 +209,9 @@ async def create_turn(
             turn.collaboration_phase = "running"
             turn.synthesize = True
             parallel_request = await ParallelInvocationService(
-                session, request.app.state.coordinator.agent_registry
+                session,
+                request.app.state.coordinator.agent_registry,
+                request.app.state.coordinator.collaboration_inactivity_seconds,
             ).create(
                 conversation_id=conversation_id,
                 turn_id=turn.id,

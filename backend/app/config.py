@@ -48,10 +48,7 @@ class Settings(BaseSettings):
     collaboration_idle_stall_seconds: float = Field(default=45.0, gt=0)
     collaboration_tool_idle_stall_seconds: float = Field(default=90.0, gt=0)
     collaboration_inactivity_budget_seconds: float = Field(default=120.0, gt=0)
-    collaboration_agent_hard_timeout_seconds: float = Field(default=300.0, gt=0)
     collaboration_synthesis_idle_stall_seconds: float = Field(default=30.0, gt=0)
-    collaboration_synthesis_hard_timeout_seconds: float = Field(default=120.0, gt=0)
-    collaboration_turn_hard_timeout_seconds: float = Field(default=480.0, gt=0)
     collaboration_confirmation_ttl_seconds: float = Field(default=1800.0, gt=0)
     skills_root: Path = Path("skills")
     mcp_config_path: Path = Path("config/mcp_servers.yaml")
@@ -107,10 +104,7 @@ class Settings(BaseSettings):
             idle_stall_seconds=self.collaboration_idle_stall_seconds,
             tool_idle_stall_seconds=self.collaboration_tool_idle_stall_seconds,
             inactivity_budget_seconds=self.collaboration_inactivity_budget_seconds,
-            agent_hard_timeout_seconds=self.collaboration_agent_hard_timeout_seconds,
             synthesis_idle_stall_seconds=self.collaboration_synthesis_idle_stall_seconds,
-            synthesis_hard_timeout_seconds=self.collaboration_synthesis_hard_timeout_seconds,
-            turn_hard_timeout_seconds=self.collaboration_turn_hard_timeout_seconds,
             confirmation_ttl_seconds=self.collaboration_confirmation_ttl_seconds,
         )
 

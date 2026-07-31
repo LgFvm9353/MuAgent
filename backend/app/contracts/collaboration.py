@@ -46,10 +46,7 @@ class ActivityTimeouts(BaseModel):
     idle_stall_seconds: float = Field(default=45.0, gt=0)
     tool_idle_stall_seconds: float = Field(default=90.0, gt=0)
     inactivity_budget_seconds: float = Field(default=120.0, gt=0)
-    agent_hard_timeout_seconds: float = Field(default=300.0, gt=0)
     synthesis_idle_stall_seconds: float = Field(default=30.0, gt=0)
-    synthesis_hard_timeout_seconds: float = Field(default=120.0, gt=0)
-    turn_hard_timeout_seconds: float = Field(default=480.0, gt=0)
     confirmation_ttl_seconds: float = Field(default=1800.0, gt=0)
 
     @model_validator(mode="after")
@@ -60,14 +57,6 @@ class ActivityTimeouts(BaseModel):
             raise ValueError("idle warning must be shorter than idle stall")
         if self.idle_stall_seconds > self.tool_idle_stall_seconds:
             raise ValueError("tool idle stall must not be shorter than idle stall")
-        if self.inactivity_budget_seconds > self.agent_hard_timeout_seconds:
-            raise ValueError("inactivity budget must not exceed agent hard timeout")
-        if self.synthesis_idle_stall_seconds > self.synthesis_hard_timeout_seconds:
-            raise ValueError("synthesis idle stall must not exceed synthesis hard timeout")
-        if self.agent_hard_timeout_seconds > self.turn_hard_timeout_seconds:
-            raise ValueError("agent hard timeout must not exceed turn hard timeout")
-        if self.synthesis_hard_timeout_seconds > self.turn_hard_timeout_seconds:
-            raise ValueError("synthesis hard timeout must not exceed turn hard timeout")
         return self
 
 

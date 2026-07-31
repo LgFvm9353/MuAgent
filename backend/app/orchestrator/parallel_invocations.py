@@ -20,9 +20,18 @@ _TERMINAL_REQUEST_STATUSES = frozenset({"done", "timeout", "failed"})
 
 
 class ParallelInvocationService:
-    def __init__(self, session: AsyncSession, agents: AgentRegistry) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        agents: AgentRegistry,
+        inactivity_seconds: float = 120.0,
+    ) -> None:
         self._session = session
         self._agents = agents
+        self._inactivity_seconds = inactivity_seconds
+
+    def _next_deadline(self, now: datetime | None = None) -> datetime:
+        return (now or datetime.now(UTC)) + timedelta(seconds=self._inactivity_seconds)
 
     async def create(
         self,
@@ -33,7 +42,6 @@ class ParallelInvocationService:
         targets: tuple[str, ...],
         question: str,
         idempotency_key: UUID,
-        timeout_seconds: int = 480,
     ) -> ParallelInvocationRequest:
         await self._session.scalar(
             select(Conversation.id)
@@ -67,7 +75,7 @@ class ParallelInvocationService:
             context="",
             idempotency_key=idempotency_key,
             status="running",
-            deadline_at=now + timedelta(seconds=timeout_seconds),
+            deadline_at=self._next_deadline(now),
         )
         self._session.add(request)
         await self._session.flush()
@@ -121,13 +129,14 @@ class ParallelInvocationService:
         )
         if response is None or response.status in _TERMINAL_RESPONSE_STATUSES:
             return
+        now = datetime.now(UTC)
         response.status = status
         response.content = content
         response.error_type = error_type
-        response.completed_at = datetime.now(UTC)
-        await self._converge(entry.parallel_request_id)
+        response.completed_at = now
+        await self._converge(entry.parallel_request_id, now=now)
 
-    async def expire_due(self) -> int:
+    async def expire_inactive(self) -> int:
         now = datetime.now(UTC)
         requests = list(
             await self._session.scalars(
@@ -139,7 +148,19 @@ class ParallelInvocationService:
                 .with_for_update(skip_locked=True)
             )
         )
+        expired = 0
         for request in requests:
+            active_entry = await self._session.scalar(
+                select(AgentInvocationQueueEntry.id).where(
+                    AgentInvocationQueueEntry.parallel_request_id == request.id,
+                    AgentInvocationQueueEntry.status == "processing",
+                    AgentInvocationQueueEntry.lease_expires_at.is_not(None),
+                    AgentInvocationQueueEntry.lease_expires_at > now,
+                )
+            )
+            if active_entry is not None:
+                request.deadline_at = self._next_deadline(now)
+                continue
             responses = list(
                 await self._session.scalars(
                     select(ParallelInvocationResponse).where(
@@ -151,15 +172,28 @@ class ParallelInvocationService:
                 if response.status not in _TERMINAL_RESPONSE_STATUSES:
                     response.status = "timeout"
                     response.completed_at = now
+            request.deadline_at = self._next_deadline(now)
+            expired += 1
             if any(response.status == "received" for response in responses):
                 request.status = "synthesizing"
             else:
                 request.status = "failed"
                 request.completed_at = now
                 await self._aggregate(request, responses)
-        return len(requests)
+        return expired
 
-    async def _converge(self, request_id: UUID) -> None:
+    async def touch(self, request_id: UUID) -> bool:
+        request = await self._session.scalar(
+            select(ParallelInvocationRequest)
+            .where(ParallelInvocationRequest.id == request_id)
+            .with_for_update()
+        )
+        if request is None or request.status in _TERMINAL_REQUEST_STATUSES:
+            return False
+        request.deadline_at = self._next_deadline()
+        return True
+
+    async def _converge(self, request_id: UUID, *, now: datetime | None = None) -> None:
         request = await self._session.scalar(
             select(ParallelInvocationRequest)
             .where(ParallelInvocationRequest.id == request_id)
@@ -167,6 +201,8 @@ class ParallelInvocationService:
         )
         if request is None or request.status in _TERMINAL_REQUEST_STATUSES:
             return
+        activity_at = now or datetime.now(UTC)
+        request.deadline_at = self._next_deadline(activity_at)
         responses = list(
             await self._session.scalars(
                 select(ParallelInvocationResponse).where(
@@ -183,7 +219,7 @@ class ParallelInvocationService:
             "failed" if all(item.status == "failed" for item in responses) else "synthesizing"
         )
         if request.status == "failed":
-            request.completed_at = datetime.now(UTC)
+            request.completed_at = activity_at
             await self._aggregate(request, responses)
 
     async def recover_synthesis(self) -> int:
@@ -219,6 +255,7 @@ class ParallelInvocationService:
         if request is None or request.status != "synthesizing":
             return None
         request.status = "synthesis_running"
+        request.deadline_at = self._next_deadline()
         responses = list(
             await self._session.scalars(
                 select(ParallelInvocationResponse).where(
@@ -244,7 +281,9 @@ class ParallelInvocationService:
             )
         )
         request.status = "done"
-        request.completed_at = datetime.now(UTC)
+        completed_at = datetime.now(UTC)
+        request.deadline_at = self._next_deadline(completed_at)
+        request.completed_at = completed_at
         await self._aggregate(request, responses, synthesized_text=text)
 
     async def _aggregate(

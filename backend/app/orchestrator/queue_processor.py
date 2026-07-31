@@ -45,51 +45,55 @@ class QueueProcessor:
         self._schedule_task = schedule_task
         self._lease_seconds = lease_seconds
         self._owner = f"processor:{uuid4()}"
-        self._timeout_tasks: set[asyncio.Task[None]] = set()
+        self._inactivity_scanner: asyncio.Task[None] | None = None
+
+    def _parallel_service(self, session: AsyncSession) -> ParallelInvocationService:
+        return ParallelInvocationService(
+            session,
+            self._agents,
+            self._settings.collaboration_inactivity_budget_seconds,
+        )
 
     async def resume_timeouts(self) -> None:
         async with self._sessions() as session:
-            await ParallelInvocationService(session, self._agents).recover_synthesis()
-            deadlines = list(
-                await session.scalars(
-                    select(ParallelInvocationRequest.deadline_at).where(
-                        ParallelInvocationRequest.status.not_in(
-                            {"done", "timeout", "failed"}
-                        )
-                    )
-                )
-            )
+            await self._parallel_service(session).recover_synthesis()
             await session.commit()
-        now = datetime.now(UTC)
-        for deadline in deadlines:
-            normalized = deadline if deadline.tzinfo is not None else deadline.replace(tzinfo=UTC)
-            self._schedule_timeout(max(0.0, (normalized - now).total_seconds()))
+        await self._scan_inactive()
+        if self._inactivity_scanner is None or self._inactivity_scanner.done():
+            self._inactivity_scanner = asyncio.create_task(
+                self._scan_inactive_forever(), name="parallel-inactivity-scanner"
+            )
 
-    def _schedule_timeout(self, delay: float) -> None:
-        task = asyncio.create_task(self._expire_after(delay), name="parallel-timeout")
-        self._timeout_tasks.add(task)
-        task.add_done_callback(self._timeout_tasks.discard)
-
-    async def _expire_after(self, delay: float) -> None:
-        await asyncio.sleep(delay)
+    async def _scan_inactive(self) -> None:
         async with self._sessions() as session:
-            await ParallelInvocationService(session, self._agents).expire_due()
+            service = self._parallel_service(session)
+            await service.expire_inactive()
             await session.commit()
         await self._synthesize_ready()
 
+    async def _scan_inactive_forever(self) -> None:
+        interval = max(
+            1.0,
+            min(60.0, self._settings.collaboration_inactivity_budget_seconds / 3),
+        )
+        while True:
+            await asyncio.sleep(interval)
+            await self._scan_inactive()
+
     async def close(self) -> None:
-        tasks = tuple(self._timeout_tasks)
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        scanner = self._inactivity_scanner
+        self._inactivity_scanner = None
+        if scanner is None:
+            return
+        scanner.cancel()
+        await asyncio.gather(scanner, return_exceptions=True)
 
     async def drain(self) -> None:
         while True:
             async with self._sessions() as session:
                 queue = InvocationQueueRepository(session)
                 await queue.recover_expired()
-                await ParallelInvocationService(session, self._agents).expire_due()
+                await self._parallel_service(session).expire_inactive()
                 entries = await queue.claim_ready(
                     lease_owner=self._owner,
                     lease_seconds=self._lease_seconds,
@@ -113,7 +117,7 @@ class QueueProcessor:
 
     async def _synthesize(self, request_id: UUID) -> None:
         async with self._sessions() as session:
-            claimed = await ParallelInvocationService(session, self._agents).claim_synthesis(
+            claimed = await self._parallel_service(session).claim_synthesis(
                 request_id
             )
             if claimed is None:
@@ -141,20 +145,23 @@ class QueueProcessor:
             ),
         }
         definition = self._agents.get("architect")
-        result = await self._gateway.structured(
-            model=definition.model,
-            system=(
-                "You are the system synthesis stage for parallel agent collaboration. "
-                "Return only a grounded synthesis of the supplied agent results."
+        result = await self._with_parallel_heartbeat(
+            request_id,
+            self._gateway.structured(
+                model=definition.model,
+                system=(
+                    "You are the system synthesis stage for parallel agent collaboration. "
+                    "Return only a grounded synthesis of the supplied agent results."
+                ),
+                user_content=json.dumps(synthesis_input, ensure_ascii=False, sort_keys=True),
+                output_model=ParallelSynthesisReply,
             ),
-            user_content=json.dumps(synthesis_input, ensure_ascii=False, sort_keys=True),
-            output_model=ParallelSynthesisReply,
         )
         if result.parsed_output is None:
             raise RuntimeError("parallel synthesis returned no output")
         reply = ParallelSynthesisReply.model_validate(result.parsed_output)
         async with self._sessions() as session:
-            await ParallelInvocationService(session, self._agents).complete_synthesis(
+            await self._parallel_service(session).complete_synthesis(
                 request_id, reply.text
             )
             await session.commit()
@@ -196,11 +203,42 @@ class QueueProcessor:
                 if task in done:
                     return task.result()
                 async with self._sessions() as session:
-                    await InvocationQueueRepository(session).renew(
+                    queue = InvocationQueueRepository(session)
+                    await queue.renew(
                         entry_id,
                         lease_owner=self._owner,
                         lease_seconds=self._lease_seconds,
                     )
+                    entry = await session.get(AgentInvocationQueueEntry, entry_id)
+                    if entry is not None and entry.parallel_request_id is not None:
+                        await self._parallel_service(session).touch(
+                            entry.parallel_request_id
+                        )
+                    await session.commit()
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    async def _with_parallel_heartbeat(
+        self, request_id: UUID, operation: Awaitable[ResultT]
+    ) -> ResultT:
+        task = asyncio.ensure_future(operation)
+        interval = max(
+            1.0,
+            min(
+                self._lease_seconds / 3,
+                self._settings.collaboration_inactivity_budget_seconds / 3,
+            ),
+        )
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=interval)
+                if task in done:
+                    return task.result()
+                async with self._sessions() as session:
+                    await self._parallel_service(session).touch(request_id)
                     await session.commit()
         except BaseException:
             if not task.done():
@@ -318,7 +356,7 @@ class QueueProcessor:
             run.output = {"text": reply.text}
             run.completed_at = datetime.now(UTC)
             if entry.parallel_request_id is not None:
-                await ParallelInvocationService(session, self._agents).record_success(
+                await self._parallel_service(session).record_success(
                     entry, {"text": reply.text}
                 )
             await InvocationQueueRepository(session).complete(entry.id, lease_owner=self._owner)
@@ -337,7 +375,7 @@ class QueueProcessor:
                 run.error_type = error_type
                 run.completed_at = datetime.now(UTC)
             if entry.parallel_request_id is not None:
-                await ParallelInvocationService(session, self._agents).record_failure(
+                await self._parallel_service(session).record_failure(
                     entry, error_type
                 )
             await InvocationQueueRepository(session).complete(

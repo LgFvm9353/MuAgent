@@ -106,6 +106,10 @@ class Coordinator:
     def agent_registry(self) -> AgentRegistry:
         return self._agents
 
+    @property
+    def collaboration_inactivity_seconds(self) -> float:
+        return self._settings.collaboration_inactivity_budget_seconds
+
     async def schedule(self, task_id: UUID) -> None:
         async with self._lock:
             current = self._active.get(task_id)
