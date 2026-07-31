@@ -15,7 +15,7 @@ export interface ConversationThread {
 
 export type CollaborationMode = 'parallel' | 'serial'
 export type CollaborationPhase =
-  | 'routing' | 'parallel' | 'serial' | 'handoff' | 'synthesis'
+  | 'routing' | 'parallel' | 'serial' | 'synthesis'
   | 'waiting_confirmation' | 'completed' | 'failed' | 'needs_review'
 
 export interface SkillSummary {
@@ -90,7 +90,6 @@ export interface ConversationMessage {
   turn_id: string | null
   agent_run_id: string | null
   routing_decision_id: string | null
-  handoff_id: string | null
   reply_to_message_id: number | null
   agent_id: string
   role: 'agent' | 'system' | 'tool' | 'user'

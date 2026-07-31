@@ -21,8 +21,6 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
         capabilities: frozenset[str],
         mention_aliases: tuple[str, ...],
         routing_keywords: tuple[str, ...],
-        handoff_targets: frozenset[str],
-        accepted_handoff_intents: frozenset[str],
         can_request_execution: bool = False,
         stage_prompts: dict[str, str] | None = None,
         stage_output_models: dict[str, type[BaseModel]] | None = None,
@@ -43,8 +41,6 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             capabilities=capabilities,
             mention_aliases=mention_aliases,
             routing_keywords=routing_keywords,
-            handoff_targets=handoff_targets,
-            accepted_handoff_intents=accepted_handoff_intents,
             can_request_execution=can_request_execution,
             stage_prompts={stage: prompts_root / path for stage, path in stage_prompts.items()}
             if stage_prompts
@@ -65,10 +61,6 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 capabilities=frozenset({"architecture", "planning", "backend"}),
                 mention_aliases=("架构师",),
                 routing_keywords=("架构", "后端", "数据库", "性能", "接口", "规划", "实现计划"),
-                handoff_targets=frozenset({"reviewer", "designer"}),
-                accepted_handoff_intents=frozenset(
-                    {"delegate", "question", "review", "revise", "execute", "done_notify"}
-                ),
                 can_request_execution=True,
                 stage_prompts={
                     "planning": "architect/planner-v1.txt",
@@ -90,10 +82,6 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 capabilities=frozenset({"review", "testing", "security", "verification"}),
                 mention_aliases=("审查员",),
                 routing_keywords=("审查", "错误", "bug", "安全", "测试", "验证", "风险"),
-                handoff_targets=frozenset({"architect", "designer"}),
-                accepted_handoff_intents=frozenset(
-                    {"delegate", "question", "review", "revise", "done_notify"}
-                ),
                 stage_prompts={"verification": "verifier/v1.txt"},
                 stage_output_models={"verification": VerificationReport},
             ),
@@ -117,10 +105,6 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                     "用户体验",
                     "ui",
                     "ux",
-                ),
-                handoff_targets=frozenset({"architect", "reviewer"}),
-                accepted_handoff_intents=frozenset(
-                    {"delegate", "question", "review", "revise", "done_notify"}
                 ),
             ),
         )

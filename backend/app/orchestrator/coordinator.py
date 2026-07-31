@@ -20,7 +20,7 @@ from app.errors import safe_error_summary
 from app.harness.context import AgentContextBuilder
 from app.harness.model_gateway import ModelGateway
 from app.harness.openai_gateway import OpenAIModelGateway
-from app.harness.registry import AgentDefinition
+from app.harness.registry import AgentDefinition, AgentRegistry
 from app.logging import logger
 from app.models import AgentRun, ConversationMessage
 from app.orchestrator.execution import ExecutionService
@@ -31,8 +31,10 @@ from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskNotFoundError, TaskRepository
 from app.services.conversation import ConversationService
 from app.services.final_summary import FinalSummaryService
+from app.skills.registry import SkillRegistry
 from app.tools.executor import ToolExecutor
 from app.tools.factory import build_tool_registry
+from app.tools.registry import ToolRegistry
 from app.workspace.task_directory import (
     WorkspacePreconditionError,
     ensure_task_directory,
@@ -45,10 +47,14 @@ class Coordinator:
         settings: Settings,
         sessions: async_sessionmaker[AsyncSession],
         prompts_root: Path,
+        tool_registry: ToolRegistry | None = None,
+        skill_registry: SkillRegistry | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
         self._prompts_root = prompts_root
+        self._chat_tools = tool_registry
+        self._skills = skill_registry
         self._active: dict[UUID, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         self._client: openai.AsyncOpenAI | anthropic.AsyncAnthropic
@@ -96,6 +102,10 @@ class Coordinator:
     def agent_definition(self, agent_id: str) -> AgentDefinition:
         return self._agents.get(agent_id)
 
+    @property
+    def agent_registry(self) -> AgentRegistry:
+        return self._agents
+
     async def schedule(self, task_id: UUID) -> None:
         async with self._lock:
             current = self._active.get(task_id)
@@ -125,6 +135,10 @@ class Coordinator:
                     self._active.pop(conversation_id, None)
 
             operation.add_done_callback(remove)
+
+    async def resume_invocations(self) -> None:
+        await self._queue_processor.resume_timeouts()
+        await self._queue_processor.drain()
 
     async def schedule_chat(self, run_ids: tuple[UUID, ...], user_text: str) -> None:
         for run_id in run_ids:
@@ -217,6 +231,7 @@ class Coordinator:
                 operation.cancel()
         if operations:
             await asyncio.gather(*operations, return_exceptions=True)
+        await self._queue_processor.close()
         await self._client.close()
 
     async def _run(self, task_id: UUID) -> None:

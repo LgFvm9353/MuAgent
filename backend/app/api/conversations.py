@@ -27,6 +27,7 @@ from app.models import (
     Task,
 )
 from app.orchestrator.invocation_queue import InvocationQueueRepository, InvocationRequest
+from app.orchestrator.parallel_invocations import ParallelInvocationService
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskRepository
 
@@ -199,19 +200,39 @@ async def create_turn(
         queue = InvocationQueueRepository(session)
         targets = ("architect",) if decision.requires_execution else decision.agent_ids
         intent = "execute" if decision.requires_execution else "delegate"
-        for agent_id in targets:
-            queued_entries.append(
-                await queue.enqueue(
-                    InvocationRequest(
-                        conversation_id=conversation_id,
-                        turn_id=turn.id,
-                        source_message_id=user_message.id,
-                        target_agent_id=agent_id,
-                        intent=intent,
-                        objective=payload.text,
+        if not decision.requires_execution and len(targets) > 1:
+            if len(targets) > 3:
+                raise HTTPException(
+                    status_code=422, detail="parallel collaboration supports at most 3 agents"
+                )
+            turn.collaboration_mode = "parallel"
+            turn.collaboration_phase = "running"
+            turn.synthesize = True
+            parallel_request = await ParallelInvocationService(
+                session, request.app.state.coordinator.agent_registry
+            ).create(
+                conversation_id=conversation_id,
+                turn_id=turn.id,
+                source_message_id=user_message.id,
+                targets=targets,
+                question=payload.text,
+                idempotency_key=payload.idempotency_key,
+            )
+            queued_entries = [parallel_request]
+        else:
+            for agent_id in targets:
+                queued_entries.append(
+                    await queue.enqueue(
+                        InvocationRequest(
+                            conversation_id=conversation_id,
+                            turn_id=turn.id,
+                            source_message_id=user_message.id,
+                            target_agent_id=agent_id,
+                            intent=intent,
+                            objective=payload.text,
+                        )
                     )
                 )
-            )
         conversation.updated_at = datetime.now(UTC)
         if conversation.title == "新对话":
             conversation.title = payload.text[:255]
@@ -303,7 +324,6 @@ async def conversation_messages(
             "turn_id": message.turn_id,
             "agent_run_id": message.agent_run_id,
             "routing_decision_id": message.routing_decision_id,
-            "handoff_id": message.handoff_id,
             "reply_to_message_id": message.reply_to_message_id,
             "agent_id": message.agent_id,
             "role": message.role,
@@ -361,7 +381,6 @@ async def stream_conversation(
                     "routing_decision_id": (
                         str(message.routing_decision_id) if message.routing_decision_id else None
                     ),
-                    "handoff_id": str(message.handoff_id) if message.handoff_id else None,
                     "reply_to_message_id": message.reply_to_message_id,
                     "agent_id": message.agent_id,
                     "role": message.role,

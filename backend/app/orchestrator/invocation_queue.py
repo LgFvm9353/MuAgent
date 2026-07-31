@@ -22,9 +22,8 @@ class InvocationRequest:
     source_agent_id: str | None = None
     task_id: UUID | None = None
     source_message_id: int | None = None
-    handoff_id: UUID | None = None
-    parent_invocation_id: UUID | None = None
-    depth: int = 0
+    parallel_request_id: UUID | None = None
+    parallel_response_id: UUID | None = None
     priority: int = 0
 
     def dedup_key(self) -> str:
@@ -32,6 +31,12 @@ class InvocationRequest:
             "conversation_id": str(self.conversation_id),
             "turn_id": str(self.turn_id),
             "source_message_id": self.source_message_id,
+            "parallel_request_id": (
+                str(self.parallel_request_id) if self.parallel_request_id else None
+            ),
+            "parallel_response_id": (
+                str(self.parallel_response_id) if self.parallel_response_id else None
+            ),
             "target_agent_id": self.target_agent_id,
             "intent": self.intent,
             "objective": self.objective.strip(),
@@ -63,11 +68,10 @@ class InvocationQueueRepository:
             source_agent_id=request.source_agent_id,
             target_agent_id=request.target_agent_id,
             source_message_id=request.source_message_id,
-            handoff_id=request.handoff_id,
-            parent_invocation_id=request.parent_invocation_id,
+            parallel_request_id=request.parallel_request_id,
+            parallel_response_id=request.parallel_response_id,
             intent=request.intent,
             objective=request.objective.strip(),
-            depth=request.depth,
             priority=request.priority,
             dedup_key=key,
             status="queued",

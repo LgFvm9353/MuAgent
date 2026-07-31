@@ -12,7 +12,6 @@ from app.models import (
     Task,
     VerificationReportModel,
 )
-from app.orchestrator.invocation_queue import InvocationQueueRepository, InvocationRequest
 
 
 class FinalSummaryService:
@@ -115,7 +114,6 @@ class FinalSummaryService:
             task_id=task.id,
             conversation_id=task.conversation_id,
             turn_id=origin.turn_id if origin is not None else None,
-            handoff_id=origin.handoff_id if origin is not None else None,
             reply_to_message_id=origin.source_message_id if origin is not None else None,
             agent_id="system",
             role="system",
@@ -127,21 +125,3 @@ class FinalSummaryService:
         )
         self._session.add(message)
         await self._session.flush()
-        if origin is not None:
-            await InvocationQueueRepository(self._session).enqueue(
-                InvocationRequest(
-                    conversation_id=task.conversation_id,
-                    turn_id=origin.turn_id,
-                    task_id=task.id,
-                    source_agent_id="architect",
-                    target_agent_id="reviewer",
-                    source_message_id=message.id,
-                    parent_invocation_id=origin.id,
-                    intent="done_notify",
-                    objective=(
-                        f"Review controlled task {task.id} terminal state "
-                        f"{task.state}: {reason}"
-                    ),
-                    depth=origin.depth + 1,
-                )
-            )

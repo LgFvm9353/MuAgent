@@ -34,7 +34,7 @@ class MentionExecutionService:
         run: AgentRun,
     ) -> MentionExecutionResult:
         if entry.intent != "execute" or entry.target_agent_id != "architect":
-            raise ValueError("only execute handoffs to architect can create controlled tasks")
+            raise ValueError("only architect execute invocations can create controlled tasks")
         existing = await self._session.scalar(
             select(Task).where(Task.originating_invocation_id == entry.id).with_for_update()
         )
@@ -92,7 +92,6 @@ class MentionExecutionService:
                 conversation_id=entry.conversation_id,
                 turn_id=entry.turn_id,
                 agent_run_id=run.id,
-                handoff_id=entry.handoff_id,
                 reply_to_message_id=entry.source_message_id,
                 agent_id="architect",
                 role="system",

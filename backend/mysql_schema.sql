@@ -84,32 +84,6 @@ CREATE TABLE IF NOT EXISTS `routing_decisions` (
 
 -- source_message_id is indexed but intentionally has no foreign key here. Omitting the
 -- reverse edge keeps this initialization script rerunnable without cyclic ALTER TABLE steps.
-CREATE TABLE IF NOT EXISTS `handoff_records` (
-    `id` CHAR(32) NOT NULL,
-    `turn_id` CHAR(32) NOT NULL,
-    `source_agent_id` VARCHAR(100) NOT NULL,
-    `target_agent_id` VARCHAR(100) NOT NULL,
-    `intent` VARCHAR(32) NOT NULL DEFAULT 'delegate',
-    `objective` VARCHAR(4000) NOT NULL,
-    `context_summary` VARCHAR(4000) NOT NULL,
-    `source_message_id` BIGINT NULL,
-    `parent_handoff_id` CHAR(32) NULL,
-    `completed_message_id` BIGINT NULL,
-    `depth` INT NOT NULL DEFAULT 0,
-    `status` VARCHAR(32) NOT NULL,
-    `rejection_reason` VARCHAR(255) NULL,
-    `created_at` DATETIME(6) NOT NULL,
-    PRIMARY KEY (`id`),
-    KEY `ix_handoff_records_turn_id` (`turn_id`),
-    KEY `ix_handoff_records_source_message_id` (`source_message_id`),
-    KEY `ix_handoff_records_parent_handoff_id` (`parent_handoff_id`),
-    KEY `ix_handoff_records_completed_message_id` (`completed_message_id`),
-    CONSTRAINT `fk_handoff_records_turn_id`
-        FOREIGN KEY (`turn_id`) REFERENCES `conversation_turns` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_handoff_records_parent_handoff_id`
-        FOREIGN KEY (`parent_handoff_id`) REFERENCES `handoff_records` (`id`) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS `task_events` (
     `id` BIGINT NOT NULL AUTO_INCREMENT,
     `task_id` CHAR(32) NOT NULL,
@@ -124,9 +98,8 @@ CREATE TABLE IF NOT EXISTS `task_events` (
         FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Optional source_message_id, handoff_id and task_id references intentionally have no
--- foreign keys in this rerunnable bootstrap schema. They remain indexed trace IDs;
--- Alembic migrations may add stricter constraints in managed installations.
+-- intentionally have no foreign keys in this rerunnable bootstrap schema. They remain indexed
+-- trace IDs; incremental migrations add stricter constraints in managed installations.
 CREATE TABLE IF NOT EXISTS `agent_invocation_queue` (
     `id` CHAR(32) NOT NULL,
     `conversation_id` CHAR(32) NOT NULL,
@@ -135,12 +108,11 @@ CREATE TABLE IF NOT EXISTS `agent_invocation_queue` (
     `source_agent_id` VARCHAR(100) NULL,
     `target_agent_id` VARCHAR(100) NOT NULL,
     `source_message_id` BIGINT NULL,
-    `handoff_id` CHAR(32) NULL,
-    `parent_invocation_id` CHAR(32) NULL,
+    `parallel_request_id` CHAR(32) NULL,
+    `parallel_response_id` CHAR(32) NULL,
     `intent` VARCHAR(32) NOT NULL,
     `objective` VARCHAR(4000) NOT NULL,
     `status` VARCHAR(32) NOT NULL DEFAULT 'queued',
-    `depth` INT NOT NULL DEFAULT 0,
     `attempt` INT NOT NULL DEFAULT 0,
     `priority` INT NOT NULL DEFAULT 0,
     `dedup_key` VARCHAR(64) NOT NULL,
@@ -157,26 +129,21 @@ CREATE TABLE IF NOT EXISTS `agent_invocation_queue` (
     KEY `ix_agent_invocation_queue_turn_id` (`turn_id`),
     KEY `ix_agent_invocation_queue_task_id` (`task_id`),
     KEY `ix_agent_invocation_queue_source_message_id` (`source_message_id`),
-    KEY `ix_agent_invocation_queue_handoff_id` (`handoff_id`),
-    KEY `ix_agent_invocation_queue_parent_invocation_id` (`parent_invocation_id`),
+    KEY `ix_agent_invocation_queue_parallel_request_id` (`parallel_request_id`),
+    UNIQUE KEY `uq_agent_invocation_queue_parallel_response_id` (`parallel_response_id`),
     KEY `ix_invocation_queue_claim`
         (`conversation_id`, `target_agent_id`, `status`, `available_at`),
     CONSTRAINT `fk_agent_invocation_queue_conversation_id`
         FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE,
     CONSTRAINT `fk_agent_invocation_queue_turn_id`
-        FOREIGN KEY (`turn_id`) REFERENCES `conversation_turns` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_agent_invocation_queue_parent_invocation_id`
-        FOREIGN KEY (`parent_invocation_id`) REFERENCES `agent_invocation_queue` (`id`)
-        ON DELETE SET NULL
+        FOREIGN KEY (`turn_id`) REFERENCES `conversation_turns` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `agent_runs` (
     `id` CHAR(32) NOT NULL,
     `task_id` CHAR(32) NULL,
     `turn_id` CHAR(32) NULL,
-    `handoff_id` CHAR(32) NULL,
     `invocation_queue_entry_id` CHAR(32) NULL,
-    `parent_run_id` CHAR(32) NULL,
     `intent` VARCHAR(32) NULL,
     `phase` VARCHAR(32) NULL,
     `role` VARCHAR(32) NULL,
@@ -205,20 +172,14 @@ CREATE TABLE IF NOT EXISTS `agent_runs` (
     UNIQUE KEY `uq_agent_runs_invocation_queue_entry_id` (`invocation_queue_entry_id`),
     KEY `ix_agent_runs_task_id` (`task_id`),
     KEY `ix_agent_runs_turn_id` (`turn_id`),
-    KEY `ix_agent_runs_handoff_id` (`handoff_id`),
     KEY `ix_agent_runs_invocation_queue_entry_id` (`invocation_queue_entry_id`),
-    KEY `ix_agent_runs_parent_run_id` (`parent_run_id`),
     CONSTRAINT `fk_agent_runs_task_id`
         FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE,
     CONSTRAINT `fk_agent_runs_turn_id`
         FOREIGN KEY (`turn_id`) REFERENCES `conversation_turns` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_agent_runs_handoff_id`
-        FOREIGN KEY (`handoff_id`) REFERENCES `handoff_records` (`id`) ON DELETE SET NULL,
     CONSTRAINT `fk_agent_runs_invocation_queue_entry_id`
         FOREIGN KEY (`invocation_queue_entry_id`) REFERENCES `agent_invocation_queue` (`id`)
-        ON DELETE SET NULL,
-    CONSTRAINT `fk_agent_runs_parent_run_id`
-        FOREIGN KEY (`parent_run_id`) REFERENCES `agent_runs` (`id`) ON DELETE SET NULL
+        ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `conversation_messages` (
@@ -228,7 +189,6 @@ CREATE TABLE IF NOT EXISTS `conversation_messages` (
     `turn_id` CHAR(32) NULL,
     `agent_run_id` CHAR(32) NULL,
     `routing_decision_id` CHAR(32) NULL,
-    `handoff_id` CHAR(32) NULL,
     `reply_to_message_id` BIGINT NULL,
     `agent_id` VARCHAR(100) NOT NULL,
     `role` VARCHAR(32) NOT NULL,
@@ -247,7 +207,6 @@ CREATE TABLE IF NOT EXISTS `conversation_messages` (
     KEY `ix_conversation_messages_turn_id` (`turn_id`),
     KEY `ix_conversation_messages_agent_run_id` (`agent_run_id`),
     KEY `ix_conversation_messages_routing_decision_id` (`routing_decision_id`),
-    KEY `ix_conversation_messages_handoff_id` (`handoff_id`),
     KEY `ix_conversation_messages_reply_to_message_id` (`reply_to_message_id`),
     CONSTRAINT `fk_conversation_messages_task_id`
         FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE,
@@ -259,10 +218,58 @@ CREATE TABLE IF NOT EXISTS `conversation_messages` (
         FOREIGN KEY (`agent_run_id`) REFERENCES `agent_runs` (`id`) ON DELETE SET NULL,
     CONSTRAINT `fk_conversation_messages_routing_decision_id`
         FOREIGN KEY (`routing_decision_id`) REFERENCES `routing_decisions` (`id`) ON DELETE SET NULL,
-    CONSTRAINT `fk_conversation_messages_handoff_id`
-        FOREIGN KEY (`handoff_id`) REFERENCES `handoff_records` (`id`) ON DELETE SET NULL,
     CONSTRAINT `fk_conversation_messages_reply_to_message_id`
         FOREIGN KEY (`reply_to_message_id`) REFERENCES `conversation_messages` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `parallel_invocation_requests` (
+    `id` CHAR(32) NOT NULL,
+    `conversation_id` CHAR(32) NOT NULL,
+    `turn_id` CHAR(32) NOT NULL,
+    `source_message_id` BIGINT NOT NULL,
+    `initiator_agent_id` VARCHAR(100) NOT NULL,
+    `callback_agent_id` VARCHAR(100) NOT NULL,
+    `targets` JSON NOT NULL,
+    `question` VARCHAR(4000) NOT NULL,
+    `context` VARCHAR(4000) NOT NULL,
+    `idempotency_key` CHAR(32) NOT NULL,
+    `status` VARCHAR(32) NOT NULL DEFAULT 'pending',
+    `deadline_at` DATETIME(6) NOT NULL,
+    `aggregated_message_id` BIGINT NULL,
+    `completed_at` DATETIME(6) NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_parallel_request_idempotency`
+        (`conversation_id`, `idempotency_key`),
+    KEY `ix_parallel_invocation_requests_conversation_id` (`conversation_id`),
+    KEY `ix_parallel_invocation_requests_turn_id` (`turn_id`),
+    KEY `ix_parallel_invocation_requests_status` (`status`),
+    KEY `ix_parallel_invocation_requests_deadline_at` (`deadline_at`),
+    CONSTRAINT `fk_parallel_request_conversation`
+        FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_parallel_request_turn`
+        FOREIGN KEY (`turn_id`) REFERENCES `conversation_turns` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_parallel_request_source_message`
+        FOREIGN KEY (`source_message_id`) REFERENCES `conversation_messages` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_parallel_request_aggregate`
+        FOREIGN KEY (`aggregated_message_id`) REFERENCES `conversation_messages` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `parallel_invocation_responses` (
+    `id` CHAR(32) NOT NULL,
+    `request_id` CHAR(32) NOT NULL,
+    `target_agent_id` VARCHAR(100) NOT NULL,
+    `status` VARCHAR(32) NOT NULL DEFAULT 'queued',
+    `content` JSON NULL,
+    `error_type` VARCHAR(100) NULL,
+    `completed_at` DATETIME(6) NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_parallel_response_target` (`request_id`, `target_agent_id`),
+    KEY `ix_parallel_invocation_responses_request_id` (`request_id`),
+    CONSTRAINT `fk_parallel_response_request`
+        FOREIGN KEY (`request_id`) REFERENCES `parallel_invocation_requests` (`id`)
+        ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `proposals` (
@@ -444,18 +451,19 @@ CREATE TABLE IF NOT EXISTS `alembic_version` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `alembic_version` (`version_num`)
-SELECT '0005_mention_execution'
+SELECT '0007_remove_handoff_runtime'
 WHERE NOT EXISTS (
     SELECT 1
     FROM `alembic_version`
 );
 
 UPDATE `alembic_version`
-SET `version_num` = '0005_mention_execution'
+SET `version_num` = '0007_remove_handoff_runtime'
 WHERE `version_num` IN (
     '0001_initial',
     '0002_conversations',
     '0003_multi_agent_conversations',
     '0003_tool_governance',
-    '0004_agent_invocation_queue'
+    '0004_agent_invocation_queue',
+    '0005_mention_execution'
 );

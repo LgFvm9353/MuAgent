@@ -12,7 +12,6 @@ class CollaborationPhase(StrEnum):
     ROUTING = "routing"
     PARALLEL = "parallel"
     SERIAL = "serial"
-    HANDOFF = "handoff"
     SYNTHESIS = "synthesis"
     WAITING_CONFIRMATION = "waiting_confirmation"
     COMPLETED = "completed"
@@ -36,7 +35,6 @@ class CollaborationErrorCode(StrEnum):
     MODEL_UNAVAILABLE = "model_unavailable"
     MODEL_INVALID_OUTPUT = "model_invalid_output"
     TOOL_BUDGET_EXHAUSTED = "tool_budget_exhausted"
-    HANDOFF_NOT_ALLOWED = "handoff_not_allowed"
     SYNTHESIS_FAILED = "synthesis_failed"
 
 
@@ -49,7 +47,6 @@ class ActivityTimeouts(BaseModel):
     tool_idle_stall_seconds: float = Field(default=90.0, gt=0)
     inactivity_budget_seconds: float = Field(default=120.0, gt=0)
     agent_hard_timeout_seconds: float = Field(default=300.0, gt=0)
-    handoff_hard_timeout_seconds: float = Field(default=180.0, gt=0)
     synthesis_idle_stall_seconds: float = Field(default=30.0, gt=0)
     synthesis_hard_timeout_seconds: float = Field(default=120.0, gt=0)
     turn_hard_timeout_seconds: float = Field(default=480.0, gt=0)
@@ -69,8 +66,6 @@ class ActivityTimeouts(BaseModel):
             raise ValueError("synthesis idle stall must not exceed synthesis hard timeout")
         if self.agent_hard_timeout_seconds > self.turn_hard_timeout_seconds:
             raise ValueError("agent hard timeout must not exceed turn hard timeout")
-        if self.handoff_hard_timeout_seconds > self.turn_hard_timeout_seconds:
-            raise ValueError("handoff hard timeout must not exceed turn hard timeout")
         if self.synthesis_hard_timeout_seconds > self.turn_hard_timeout_seconds:
             raise ValueError("synthesis hard timeout must not exceed turn hard timeout")
         return self
@@ -82,15 +77,12 @@ class CollaborationPolicy(BaseModel):
     mode: CollaborationMode = CollaborationMode.PARALLEL
     synthesize: bool = False
     max_agents: int = Field(default=3, ge=1, le=3)
-    max_handoff_depth: int = Field(default=0, ge=0, le=1)
     max_tool_rounds_per_agent: int = Field(default=6, ge=0, le=20)
     max_tool_calls_per_agent: int = Field(default=10, ge=0, le=50)
     max_tool_calls_per_turn: int = Field(default=20, ge=0, le=100)
 
     @model_validator(mode="after")
     def validate_mode_boundaries(self) -> "CollaborationPolicy":
-        if self.mode is CollaborationMode.PARALLEL and self.max_handoff_depth != 0:
-            raise ValueError("parallel mode must disable handoff")
         if self.mode is CollaborationMode.SERIAL and self.max_agents != 1:
             raise ValueError("serial mode must use exactly one initial agent")
         if self.max_tool_calls_per_agent > self.max_tool_calls_per_turn:

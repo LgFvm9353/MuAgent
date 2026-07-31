@@ -219,7 +219,7 @@ class Scheduler:
 
         await self._publish(
             agent_id,
-            "handoff",
+            "specialist_completed",
             f"@Architect {agent_id} 已完成并提交结果。",
             {"from_agent": agent_id, "target_agents": ["architect"], "status": "completed"},
         )
