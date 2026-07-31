@@ -21,6 +21,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
         capabilities: frozenset[str],
         mention_aliases: tuple[str, ...],
         routing_keywords: tuple[str, ...],
+        allowed_tools: frozenset[str] = frozenset(),
         can_request_execution: bool = False,
         stage_prompts: dict[str, str] | None = None,
         stage_output_models: dict[str, type[BaseModel]] | None = None,
@@ -33,7 +34,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             prompt_version="v1",
             schema_version="v1",
             output_model=output_model,
-            allowed_tools=frozenset(),
+            allowed_tools=allowed_tools,
             timeout_seconds=settings.model_timeout_seconds,
             max_retries=2,
             display_name=display_name,
@@ -61,6 +62,9 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 capabilities=frozenset({"architecture", "planning", "backend"}),
                 mention_aliases=("架构师",),
                 routing_keywords=("架构", "后端", "数据库", "性能", "接口", "规划", "实现计划"),
+                allowed_tools=frozenset(
+                    {"mcp.context7.resolve-library-id", "mcp.context7.query-docs"}
+                ),
                 can_request_execution=True,
                 stage_prompts={
                     "planning": "architect/planner-v1.txt",
@@ -82,6 +86,9 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 capabilities=frozenset({"review", "testing", "security", "verification"}),
                 mention_aliases=("审查员",),
                 routing_keywords=("审查", "错误", "bug", "安全", "测试", "验证", "风险"),
+                allowed_tools=frozenset(
+                    {"mcp.context7.resolve-library-id", "mcp.context7.query-docs"}
+                ),
                 stage_prompts={"verification": "verifier/v1.txt"},
                 stage_output_models={"verification": VerificationReport},
             ),
@@ -105,6 +112,15 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                     "用户体验",
                     "ui",
                     "ux",
+                ),
+                allowed_tools=frozenset(
+                    {
+                        "mcp.context7.resolve-library-id",
+                        "mcp.context7.query-docs",
+                        "mcp.playwright.playwright_get_visible_text",
+                        "mcp.playwright.playwright_get_visible_html",
+                        "mcp.playwright.playwright_console_logs",
+                    }
                 ),
             ),
         )

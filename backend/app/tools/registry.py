@@ -85,3 +85,22 @@ class ToolRegistry:
 
     def catalog(self, allowed: frozenset[str]) -> tuple[dict[str, Any], ...]:
         return tuple(self.get(name).planning_schema() for name in sorted(allowed))
+
+    def model_mcp_tools(
+        self,
+        allowed: frozenset[str],
+        *,
+        maximum_risk: RiskLevel = RiskLevel.LOW,
+    ) -> tuple[ToolDefinition[Any, Any], ...]:
+        risk_order = {
+            RiskLevel.LOW: 0,
+            RiskLevel.MEDIUM: 1,
+            RiskLevel.HIGH: 2,
+        }
+        limit = risk_order[maximum_risk]
+        return tuple(
+            definition
+            for name in sorted(allowed & self.names(source=ToolSource.MCP))
+            if (definition := self.get(name)).source is ToolSource.MCP
+            and risk_order[definition.risk] <= limit
+        )
