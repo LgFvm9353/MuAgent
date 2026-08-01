@@ -196,7 +196,7 @@ async def create_turn(
         session.add(user_message)
         await session.flush()
         new_runs: list[AgentRun] = []
-        queued_entries = []
+        queued_entries: list[Any] = []
         queue = InvocationQueueRepository(session)
         targets = ("architect",) if decision.requires_execution else decision.agent_ids
         intent = "execute" if decision.requires_execution else "delegate"

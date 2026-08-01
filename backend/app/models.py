@@ -46,6 +46,37 @@ class Conversation(Base, TimestampMixin):
     )
 
 
+class ConversationContextSummary(Base, TimestampMixin):
+    __tablename__ = "conversation_context_summaries"
+    id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
+    )
+    conversation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    parent_summary_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_context_summaries.id", ondelete="SET NULL")
+    )
+    level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    source_message_start_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_message_end_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    covered_message_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    key_message_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
+    source_token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    summary_token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    compression_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    tokenizer: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1")
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        Index("ix_context_summary_current", "conversation_id", "status", "created_at"),
+        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
+    )
+
+
 class ConversationTurn(Base, TimestampMixin):
     __tablename__ = "conversation_turns"
     id: Mapped[UUID] = mapped_column(

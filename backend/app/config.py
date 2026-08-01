@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     artifacts_root: Path = Path("data/artifacts")
     model_concurrency: int = Field(default=4, ge=1, le=32)
     model_timeout_seconds: float = Field(default=600.0, gt=0)
+    context_compression_model: str | None = None
+    context_compression_model_context_window: int | None = Field(default=None, ge=16_384)
+    context_compression_model_max_output_tokens: int | None = Field(default=None, ge=1_024)
+    context_compression_threshold: float = Field(default=0.85, gt=0, le=1)
+    context_compression_target: float = Field(default=0.60, gt=0, le=1)
+    context_safety_margin_ratio: float = Field(default=0.02, ge=0, le=0.20)
+    context_unknown_model_window: int = Field(default=128_000, ge=16_384)
+    context_unknown_model_max_output_tokens: int = Field(default=8_192, ge=1_024)
+    context_model_windows: str = ""
+    context_model_max_output_tokens: str = ""
+    context_recent_messages: int = Field(default=12, ge=2, le=100)
     tool_timeout_seconds: float = Field(default=120.0, gt=0)
     mention_execution_tools: str = (
         "list_workspace_files,read_workspace_file,create_workspace_file,"
@@ -132,6 +143,8 @@ class Settings(BaseSettings):
     def validate_provider(self) -> "Settings":
         _ = self.collaboration_timeouts
         _ = self.collaboration_policy()
+        if self.context_compression_target >= self.context_compression_threshold:
+            raise ValueError("CONTEXT_COMPRESSION_TARGET must be below threshold")
         if self.llm_api_key is not None:
             if not self.llm_api_key.get_secret_value().strip():
                 raise ValueError("LLM_API_KEY must not be empty")

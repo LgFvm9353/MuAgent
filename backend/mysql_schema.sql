@@ -16,6 +16,36 @@ CREATE TABLE IF NOT EXISTS `conversations` (
     KEY `ix_conversations_updated_at` (`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `conversation_context_summaries` (
+    `id` CHAR(32) NOT NULL,
+    `conversation_id` CHAR(32) NOT NULL,
+    `parent_summary_id` CHAR(32) NULL,
+    `level` INT NOT NULL DEFAULT 0,
+    `status` VARCHAR(32) NOT NULL,
+    `source_message_start_id` BIGINT NOT NULL,
+    `source_message_end_id` BIGINT NOT NULL,
+    `covered_message_count` INT NOT NULL,
+    `summary` JSON NOT NULL,
+    `key_message_ids` JSON NOT NULL,
+    `source_token_count` INT NOT NULL,
+    `summary_token_count` INT NOT NULL,
+    `compression_model` VARCHAR(100) NOT NULL,
+    `tokenizer` VARCHAR(64) NOT NULL,
+    `schema_version` VARCHAR(32) NOT NULL DEFAULT '1',
+    `failure_code` VARCHAR(100) NULL,
+    `completed_at` DATETIME(6) NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    KEY `ix_conversation_context_summaries_conversation_id` (`conversation_id`),
+    KEY `ix_conversation_context_summaries_status` (`status`),
+    KEY `ix_context_summary_current` (`conversation_id`, `status`, `created_at`),
+    CONSTRAINT `fk_context_summaries_conversation`
+        FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_context_summaries_parent`
+        FOREIGN KEY (`parent_summary_id`) REFERENCES `conversation_context_summaries` (`id`)
+        ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `tasks` (
     `id` CHAR(32) NOT NULL,
     `conversation_id` CHAR(32) NOT NULL,
@@ -451,19 +481,21 @@ CREATE TABLE IF NOT EXISTS `alembic_version` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `alembic_version` (`version_num`)
-SELECT '0007_remove_handoff_runtime'
+SELECT '0008_context_summaries'
 WHERE NOT EXISTS (
     SELECT 1
     FROM `alembic_version`
 );
 
 UPDATE `alembic_version`
-SET `version_num` = '0007_remove_handoff_runtime'
+SET `version_num` = '0008_context_summaries'
 WHERE `version_num` IN (
     '0001_initial',
     '0002_conversations',
     '0003_multi_agent_conversations',
     '0003_tool_governance',
     '0004_agent_invocation_queue',
-    '0005_mention_execution'
+    '0005_mention_execution',
+    '0006_parallel_invocations',
+    '0007_remove_handoff_runtime'
 );
