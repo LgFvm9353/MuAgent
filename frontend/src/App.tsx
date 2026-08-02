@@ -1,11 +1,9 @@
 import { Bot, Menu, Plus, Wifi, WifiOff } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AgentWorkspace } from './components/AgentWorkspace'
+import { CollaborationDetails } from './components/CollaborationDetails'
 import { Conversation } from './components/Conversation'
 import { ConversationSidebar } from './components/ConversationSidebar'
-import { TaskArtifactsPanel } from './components/TaskArtifactsPanel'
 import { TaskComposer } from './components/TaskComposer'
-import { TaskResultPanel } from './components/TaskResultPanel'
 import { ToastProvider, useToast } from './components/ToastProvider'
 import { useConversationStream } from './hooks/useConversationStream'
 import { useTaskStream } from './hooks/useTaskStream'
@@ -24,13 +22,11 @@ import {
   sendConversationMessage,
 } from './lib/api'
 import { deriveAgentWorkspace } from './lib/agentWorkspace'
-import { apiDateTimestamp } from './lib/dateTime'
-import { conversationToMessage, eventToMessage } from './lib/messages'
+import { conversationToMessage } from './lib/messages'
 import type {
   ChatMessage,
   ConversationMessage,
   ConversationThread,
-  ConversationTurn,
   PendingConfirmation,
   Task,
   TaskEvent,
@@ -51,8 +47,6 @@ function Workbench() {
   const [activeTask, setActiveTask] = useState<Task | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
-  const [pendingTurn, setPendingTurn] = useState<ConversationTurn | null>(null)
-  const [clock, setClock] = useState(() => Date.now())
   const [confirmations, setConfirmations] = useState<PendingConfirmation[]>([])
   const [result, setResult] = useState<TaskResult | null>(null)
   const [loading, setLoading] = useState(true)
@@ -61,14 +55,6 @@ function Workbench() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const loadGeneration = useRef(0)
   const loadController = useRef<AbortController | null>(null)
-  const pendingStartedAt = useRef(0)
-
-  useEffect(() => {
-    if (!pendingTurn) return
-    setClock(Date.now())
-    const timer = window.setInterval(() => setClock(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [pendingTurn])
 
   const loadThreads = useCallback(async () => {
     setLoading(true)
@@ -94,7 +80,6 @@ function Workbench() {
     setSelected(thread)
     setEvents([])
     setConversation([])
-    setPendingTurn(null)
     setConfirmations([])
     setResult(null)
     setError(null)
@@ -181,22 +166,6 @@ function Workbench() {
 
   const updateMessage = useCallback((message: ConversationMessage) => {
     setConversation((items) => items.some((item) => item.id === message.id) ? items : [...items, message])
-    if (message.turn_id) {
-      setPendingTurn((turn) => {
-        if (!turn || turn.turn_id !== message.turn_id) return turn
-        if (message.message_type === 'collaboration_result' || message.message_type === 'collaboration_failed') {
-          return null
-        }
-        if (!message.agent_run_id || !['agent_message', 'agent_failed'].includes(message.message_type)) {
-          return turn
-        }
-        const remaining = turn.agent_runs.filter((run) => run.id !== message.agent_run_id)
-        if (remaining.length === 0 && turn.synthesize) {
-          return { ...turn, agent_runs: [] }
-        }
-        return remaining.length === 0 ? null : { ...turn, agent_runs: remaining }
-      })
-    }
   }, [])
 
   const conversationStreamStatus = useConversationStream({
@@ -223,25 +192,10 @@ function Workbench() {
     onWarning: () => show({ tone: 'warning', title: '实时连接中断', description: '系统正在自动重连。', dedupeKey: 'sse-warning' }),
   })
 
-  const messages = useMemo<ChatMessage[]>(() => {
-    const elapsedSeconds = pendingStartedAt.current
-      ? Math.max(0, Math.floor((clock - pendingStartedAt.current) / 1000))
-      : 0
-    const pendingMessages: ChatMessage[] = pendingTurn?.agent_runs.map((run) => ({
-      id: `pending-${run.id}`,
-      role: 'agent',
-      title: `${run.agent_id} · ${run.model}`,
-      content: `${run.agent_id} 正在生成回复，已等待 ${elapsedSeconds} 秒…`,
-      createdAt: new Date(pendingStartedAt.current || clock).toISOString(),
-      agentId: run.agent_id,
-      phase: 'running',
-    })) || []
-    return [
-      ...events.map(eventToMessage),
-      ...conversation.map(conversationToMessage),
-      ...pendingMessages,
-    ].sort((left, right) => apiDateTimestamp(left.createdAt) - apiDateTimestamp(right.createdAt))
-  }, [clock, conversation, events, pendingTurn])
+  const messages = useMemo<ChatMessage[]>(
+    () => conversation.map(conversationToMessage),
+    [conversation],
+  )
   const agentWorkspace = useMemo(
     () => activeTask
       ? deriveAgentWorkspace(
@@ -260,10 +214,6 @@ function Workbench() {
     setBusy(true)
     try {
       const turn = await sendConversationMessage(selected.id, goal)
-      if (turn.agent_runs.length > 0) {
-        pendingStartedAt.current = Date.now()
-        setPendingTurn(turn)
-      }
       const thread = await getConversation(selected.id)
       if (turn.task_id) {
         setActiveTask(await getTask(turn.task_id))
@@ -355,7 +305,7 @@ function Workbench() {
         <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()}><Plus size={15}/>新建对话</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : conversationStreamStatus === 'reconnecting' || taskStreamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
       </header>
       {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div><div className="flex items-center gap-2">{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div></div>}
-      <section className="message-panel">{agentWorkspace && <AgentWorkspace agents={agentWorkspace}/>} {activeTask && <TaskArtifactsPanel taskId={activeTask.id} refreshKey={activeTask.updated_at}/>}<Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{result && <details className="mx-4 mb-4"><summary className="cursor-pointer text-sm text-violet-300">查看当前轮运行详情</summary><TaskResultPanel result={result}/></details>}</section>
+      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{activeTask && agentWorkspace && <CollaborationDetails task={activeTask} agents={agentWorkspace} events={events} result={result}/>}</section>
       {confirmations.length > 0 && <section className="confirmation-panel">{confirmations.map((confirmation) => <article className="confirmation-card" key={confirmation.call_hash}><div><strong>Executor 请求人工确认</strong><p>{confirmation.tool_name} · {confirmation.risk}</p><p>{confirmation.impact}</p><details><summary>查看工具参数</summary><pre>{JSON.stringify(confirmation.arguments, null, 2)}</pre></details></div><div className="confirmation-actions"><button className="secondary-button" disabled={busy} onClick={() => void decide(confirmation, false)}>拒绝</button><button className="primary-button" disabled={busy} onClick={() => void decide(confirmation, true)}>批准</button></div></article>)}</section>}
       {selected ? <TaskComposer busy={busy} running={running} onSubmit={submit} onCancel={cancel}/> : <div className="p-6 text-center text-sm text-zinc-500">请先新建一个对话。</div>}
     </main>

@@ -55,7 +55,7 @@ function AgentCard({ agent, now }: { agent: WorkspaceAgentState; now: number }) 
   </article>
 }
 
-export function AgentWorkspace({ agents }: { agents: AgentWorkspaceState }) {
+export function AgentWorkspace({ agents, compact = false }: { agents: AgentWorkspaceState; compact?: boolean }) {
   const hasRunningAgent = Object.values(agents).some((agent) => agent.status === 'running')
   const [now, setNow] = useState(Date.now())
 
@@ -65,11 +65,11 @@ export function AgentWorkspace({ agents }: { agents: AgentWorkspaceState }) {
     return () => window.clearInterval(timer)
   }, [hasRunningAgent])
 
-  return <section className="agent-workspace" aria-label="三 Agent 实时工作区" aria-live="polite">
-    <div className="agent-workspace-heading">
+  return <section className={`agent-workspace${compact ? ' agent-workspace-compact' : ''}`} aria-label="三 Agent 实时工作区" aria-live="polite">
+    {!compact && <div className="agent-workspace-heading">
       <div><span className="eyebrow">实时协作</span><h3>三 Agent 工作区</h3></div>
       <p>Reviewer 与 Designer 接受委派后并行执行，Architect 最后汇总。</p>
-    </div>
+    </div>}
     <div className="agent-workspace-flow">
       <AgentCard agent={agents.architect} now={now}/>
       <div className="agent-workspace-specialists">

@@ -70,6 +70,7 @@ export function conversationToMessage(message: ConversationMessage): ChatMessage
     details: isUser ? undefined : message.content,
     agentId: message.agent_id,
     phase: message.phase,
+    isFinal,
   }
 }
 

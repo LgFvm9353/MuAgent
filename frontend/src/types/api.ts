@@ -179,6 +179,7 @@ export interface ChatMessage {
   details?: Record<string, unknown>
   agentId?: string
   phase?: string
+  isFinal?: boolean
 }
 
 export type StreamStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error'
