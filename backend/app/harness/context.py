@@ -1,6 +1,7 @@
 from typing import Any
 
 from app.contracts.task import TaskContract
+from app.memory.contracts import MemoryContextBundle
 
 
 class AgentContextBuilder:
@@ -10,8 +11,9 @@ class AgentContextBuilder:
         agent_id: str,
         user_text: str,
         relevant_history: tuple[dict[str, Any], ...] = (),
+        memory: MemoryContextBundle | None = None,
     ) -> dict[str, Any]:
-        return {
+        context = {
             "agent_id": agent_id,
             "user_message": user_text,
             "relevant_history": relevant_history,
@@ -20,6 +22,9 @@ class AgentContextBuilder:
                 "If real-world changes are required, explain that controlled execution is needed."
             ),
         }
+        if memory is not None:
+            context.update(memory.model_dump(mode="json"))
+        return context
 
     def invocation_context(
         self,
@@ -32,8 +37,9 @@ class AgentContextBuilder:
         relevant_history: tuple[dict[str, Any], ...],
         teammates: tuple[dict[str, Any], ...],
         parallel: dict[str, Any] | None = None,
+        memory: MemoryContextBundle | None = None,
     ) -> dict[str, Any]:
-        return {
+        context = {
             "agent_id": agent_id,
             "invocation": {
                 "source_agent_id": source_agent_id,
@@ -57,6 +63,9 @@ class AgentContextBuilder:
                 )
             ),
         }
+        if memory is not None:
+            context.update(memory.model_dump(mode="json"))
+        return context
 
 
 class ContextBuilder:

@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TypeVar
 from uuid import UUID, uuid4
 
@@ -15,6 +16,7 @@ from app.errors import safe_error_summary
 from app.harness.context import AgentContextBuilder
 from app.harness.registry import AgentRegistry
 from app.logging import logger
+from app.memory.service import MemoryService
 from app.models import (
     AgentInvocationQueueEntry,
     AgentRun,
@@ -50,6 +52,7 @@ class QueueProcessor:
         self._settings = settings
         self._schedule_task = schedule_task
         self._tool_registry = tool_registry
+        self._memory = MemoryService(settings, Path.cwd())
         self._lease_seconds = lease_seconds
         self._owner = f"processor:{uuid4()}"
         self._inactivity_scanner: asyncio.Task[None] | None = None
@@ -124,9 +127,7 @@ class QueueProcessor:
 
     async def _synthesize(self, request_id: UUID) -> None:
         async with self._sessions() as session:
-            claimed = await self._parallel_service(session).claim_synthesis(
-                request_id
-            )
+            claimed = await self._parallel_service(session).claim_synthesis(request_id)
             if claimed is None:
                 return
             request, responses = claimed
@@ -168,9 +169,7 @@ class QueueProcessor:
             raise RuntimeError("parallel synthesis returned no output")
         reply = ParallelSynthesisReply.model_validate(result.parsed_output)
         async with self._sessions() as session:
-            await self._parallel_service(session).complete_synthesis(
-                request_id, reply.text
-            )
+            await self._parallel_service(session).complete_synthesis(request_id, reply.text)
             await session.commit()
 
     async def _execute(self, entry_id: UUID) -> None:
@@ -194,9 +193,7 @@ class QueueProcessor:
                 )
             prepared = await self._with_lease_heartbeat(
                 entry.id,
-                ContextCompressionService(
-                    self._sessions, self._gateway, self._settings
-                ).prepare(
+                ContextCompressionService(self._sessions, self._gateway, self._settings).prepare(
                     conversation_id=entry.conversation_id,
                     model=definition.model,
                     system=system,
@@ -267,9 +264,7 @@ class QueueProcessor:
                     )
                     entry = await session.get(AgentInvocationQueueEntry, entry_id)
                     if entry is not None and entry.parallel_request_id is not None:
-                        await self._parallel_service(session).touch(
-                            entry.parallel_request_id
-                        )
+                        await self._parallel_service(session).touch(entry.parallel_request_id)
                     await session.commit()
         except BaseException:
             if not task.done():
@@ -339,6 +334,11 @@ class QueueProcessor:
                         "context": parallel_request.context,
                         "anti_cascade": True,
                     }
+            memory = await self._memory.context(
+                session,
+                user_text=entry.objective,
+                scope_id=str(entry.conversation_id),
+            )
             context = AgentContextBuilder().invocation_context(
                 agent_id=entry.target_agent_id,
                 source_agent_id=entry.source_agent_id,
@@ -356,6 +356,7 @@ class QueueProcessor:
                     if item.agent_id != entry.target_agent_id
                 ),
                 parallel=parallel_context,
+                memory=memory,
             )
             await session.commit()
             return entry, run.id, context
@@ -411,9 +412,7 @@ class QueueProcessor:
             run.output = {"text": reply.text, "tool_calls": tool_calls}
             run.completed_at = datetime.now(UTC)
             if entry.parallel_request_id is not None:
-                await self._parallel_service(session).record_success(
-                    entry, {"text": reply.text}
-                )
+                await self._parallel_service(session).record_success(entry, {"text": reply.text})
             await InvocationQueueRepository(session).complete(entry.id, lease_owner=self._owner)
             await session.commit()
 
@@ -430,9 +429,7 @@ class QueueProcessor:
                 run.error_type = error_type
                 run.completed_at = datetime.now(UTC)
             if entry.parallel_request_id is not None:
-                await self._parallel_service(session).record_failure(
-                    entry, error_type
-                )
+                await self._parallel_service(session).record_failure(entry, error_type)
             await InvocationQueueRepository(session).complete(
                 entry_id,
                 lease_owner=self._owner,

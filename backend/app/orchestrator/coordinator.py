@@ -298,6 +298,7 @@ class Coordinator:
                 self._agents,
                 ToolExecutor(tools),
                 workspace_root,
+                self._settings,
             )
             state = await self._state(task_id)
             max_transitions = 3 + 2 * contract.budget.max_revisions

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.capabilities import router as capabilities_router
 from app.api.confirmations import router as confirmations_router
 from app.api.conversations import router as conversations_router
+from app.api.memories import router as memories_router
 from app.api.tasks import router as tasks_router
 from app.config import get_settings
 from app.database import Database
@@ -16,6 +17,7 @@ from app.mcp.config import load_mcp_config
 from app.mcp.manager import McpManager
 from app.mcp.registry import register_mcp_tools
 from app.mcp.sdk_connector import SdkMcpConnector
+from app.memory.service import MemoryService
 from app.orchestrator.coordinator import Coordinator
 from app.orchestrator.recovery import RecoveryService
 from app.skills.registry import SkillRegistry
@@ -30,7 +32,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
     ensure_storage_roots(settings)
+    application.state.settings = settings
     application.state.database = Database(settings.database_url)
+    application.state.memory_service = MemoryService(settings, BACKEND_ROOT.parent)
     application.state.tool_registry = build_tool_registry(settings, settings.workspace_root)
     mcp_config = load_mcp_config(BACKEND_ROOT / settings.mcp_config_path)
     application.state.mcp_manager = McpManager(
@@ -82,6 +86,7 @@ app.include_router(tasks_router)
 app.include_router(conversations_router)
 app.include_router(confirmations_router)
 app.include_router(capabilities_router)
+app.include_router(memories_router)
 
 
 @app.get("/health", tags=["system"])

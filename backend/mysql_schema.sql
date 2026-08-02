@@ -436,6 +436,143 @@ CREATE TABLE IF NOT EXISTS `verification_reports` (
         FOREIGN KEY (`plan_id`) REFERENCES `execution_plans` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `memory_profiles` (
+    `id` CHAR(32) NOT NULL,
+    `owner_type` VARCHAR(32) NOT NULL DEFAULT 'user',
+    `owner_id` VARCHAR(100) NOT NULL,
+    `schema_version` VARCHAR(32) NOT NULL DEFAULT '1',
+    `revision` INT NOT NULL DEFAULT 1,
+    `status` VARCHAR(32) NOT NULL DEFAULT 'active',
+    `updated_at` DATETIME(6) NOT NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_memory_profiles_owner` (`owner_type`, `owner_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `hard_memory_items` (
+    `id` CHAR(32) NOT NULL,
+    `profile_id` CHAR(32) NOT NULL,
+    `namespace` VARCHAR(64) NOT NULL,
+    `key` VARCHAR(100) NOT NULL,
+    `value` JSON NOT NULL,
+    `value_type` VARCHAR(32) NOT NULL,
+    `source_type` VARCHAR(32) NOT NULL,
+    `source_message_id` BIGINT NULL,
+    `revision` INT NOT NULL,
+    `status` VARCHAR(32) NOT NULL DEFAULT 'active',
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_hard_memory_revision`
+        (`profile_id`, `namespace`, `key`, `revision`),
+    KEY `ix_hard_memory_items_profile_id` (`profile_id`),
+    KEY `ix_hard_memory_active` (`profile_id`, `status`, `namespace`, `key`),
+    CONSTRAINT `fk_hard_memory_items_profile_id`
+        FOREIGN KEY (`profile_id`) REFERENCES `memory_profiles` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `episodic_memories` (
+    `id` CHAR(32) NOT NULL,
+    `owner_id` VARCHAR(100) NOT NULL,
+    `scope_type` VARCHAR(32) NOT NULL,
+    `scope_id` VARCHAR(255) NULL,
+    `memory_type` VARCHAR(32) NOT NULL,
+    `status` VARCHAR(32) NOT NULL DEFAULT 'candidate',
+    `title` VARCHAR(500) NOT NULL,
+    `problem_text` TEXT NOT NULL,
+    `resolution_text` TEXT NOT NULL,
+    `lessons_text` TEXT NULL,
+    `search_text` TEXT NOT NULL,
+    `applicability` JSON NOT NULL,
+    `confidence` DOUBLE NOT NULL DEFAULT 0,
+    `validation_count` INT NOT NULL DEFAULT 0,
+    `contradiction_count` INT NOT NULL DEFAULT 0,
+    `content_hash` VARCHAR(64) NOT NULL,
+    `source_task_id` CHAR(32) NULL,
+    `source_conversation_id` CHAR(32) NULL,
+    `source_verification_id` CHAR(32) NULL,
+    `environment_fingerprint` VARCHAR(64) NULL,
+    `last_validated_at` DATETIME(6) NULL,
+    `expires_at` DATETIME(6) NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_episodic_memory_content`
+        (`owner_id`, `scope_type`, `scope_id`, `content_hash`),
+    KEY `ix_episodic_memories_owner_id` (`owner_id`),
+    KEY `ix_episodic_memories_scope_id` (`scope_id`),
+    KEY `ix_episodic_memories_memory_type` (`memory_type`),
+    KEY `ix_episodic_memories_status` (`status`),
+    KEY `ix_episodic_memories_source_task_id` (`source_task_id`),
+    KEY `ix_episodic_memories_source_conversation_id` (`source_conversation_id`),
+    KEY `ix_episodic_memories_source_verification_id` (`source_verification_id`),
+    KEY `ix_episodic_memories_environment_fingerprint` (`environment_fingerprint`),
+    KEY `ix_episodic_memories_expires_at` (`expires_at`),
+    KEY `ix_episodic_lookup` (`owner_id`, `status`, `scope_type`, `scope_id`),
+    FULLTEXT KEY `ft_episodic_search`
+        (`title`, `problem_text`, `resolution_text`, `search_text`) WITH PARSER ngram,
+    CONSTRAINT `fk_episodic_memories_source_task_id`
+        FOREIGN KEY (`source_task_id`) REFERENCES `tasks` (`id`) ON DELETE SET NULL,
+    CONSTRAINT `fk_episodic_memories_source_conversation_id`
+        FOREIGN KEY (`source_conversation_id`) REFERENCES `conversations` (`id`) ON DELETE SET NULL,
+    CONSTRAINT `fk_episodic_memories_source_verification_id`
+        FOREIGN KEY (`source_verification_id`) REFERENCES `verification_reports` (`id`)
+        ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `episodic_memory_facets` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `memory_id` CHAR(32) NOT NULL,
+    `facet_type` VARCHAR(32) NOT NULL,
+    `facet_value` VARCHAR(500) NOT NULL,
+    `normalized_value` VARCHAR(500) NOT NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_episodic_memory_facet`
+        (`memory_id`, `facet_type`, `normalized_value`),
+    KEY `ix_episodic_memory_facets_memory_id` (`memory_id`),
+    KEY `ix_episodic_facet_lookup` (`facet_type`, `normalized_value`, `memory_id`),
+    CONSTRAINT `fk_episodic_memory_facets_memory_id`
+        FOREIGN KEY (`memory_id`) REFERENCES `episodic_memories` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `episodic_memory_sources` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `memory_id` CHAR(32) NOT NULL,
+    `source_type` VARCHAR(32) NOT NULL,
+    `source_id` VARCHAR(100) NOT NULL,
+    `relation` VARCHAR(32) NOT NULL,
+    `source_hash` VARCHAR(64) NULL,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_episodic_memory_source`
+        (`memory_id`, `source_type`, `source_id`, `relation`),
+    KEY `ix_episodic_memory_sources_memory_id` (`memory_id`),
+    CONSTRAINT `fk_episodic_memory_sources_memory_id`
+        FOREIGN KEY (`memory_id`) REFERENCES `episodic_memories` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `memory_consolidation_jobs` (
+    `id` CHAR(32) NOT NULL,
+    `task_id` CHAR(32) NOT NULL,
+    `dedup_key` VARCHAR(64) NOT NULL,
+    `status` VARCHAR(32) NOT NULL DEFAULT 'pending',
+    `attempt` INT NOT NULL DEFAULT 0,
+    `lease_owner` VARCHAR(100) NULL,
+    `lease_expires_at` DATETIME(6) NULL,
+    `available_at` DATETIME(6) NOT NULL,
+    `error_type` VARCHAR(100) NULL,
+    `completed_at` DATETIME(6) NULL,
+    `auto_activate` BOOLEAN NOT NULL DEFAULT FALSE,
+    `created_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_memory_consolidation_jobs_dedup_key` (`dedup_key`),
+    KEY `ix_memory_consolidation_jobs_task_id` (`task_id`),
+    KEY `ix_memory_consolidation_jobs_status` (`status`),
+    KEY `ix_memory_consolidation_jobs_lease_expires_at` (`lease_expires_at`),
+    KEY `ix_memory_consolidation_jobs_available_at` (`available_at`),
+    CONSTRAINT `fk_memory_consolidation_jobs_task_id`
+        FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `audit_events` (
     `id` BIGINT NOT NULL AUTO_INCREMENT,
     `task_id` CHAR(32) NULL,
@@ -481,14 +618,14 @@ CREATE TABLE IF NOT EXISTS `alembic_version` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `alembic_version` (`version_num`)
-SELECT '0008_context_summaries'
+SELECT '0009_long_term_memory'
 WHERE NOT EXISTS (
     SELECT 1
     FROM `alembic_version`
 );
 
 UPDATE `alembic_version`
-SET `version_num` = '0008_context_summaries'
+SET `version_num` = '0009_long_term_memory'
 WHERE `version_num` IN (
     '0001_initial',
     '0002_conversations',
@@ -497,5 +634,6 @@ WHERE `version_num` IN (
     '0004_agent_invocation_queue',
     '0005_mention_execution',
     '0006_parallel_invocations',
-    '0007_remove_handoff_runtime'
+    '0007_remove_handoff_runtime',
+    '0008_context_summaries'
 );

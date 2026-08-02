@@ -1,7 +1,8 @@
 from uuid import uuid4
 
 from app.contracts.task import AcceptanceCriterion, TaskContract
-from app.harness.context import ContextBuilder
+from app.harness.context import AgentContextBuilder, ContextBuilder
+from app.memory.contracts import MemoryContextBundle
 
 
 def task() -> TaskContract:
@@ -14,7 +15,6 @@ def task() -> TaskContract:
             AcceptanceCriterion(description="report exists", verification_method="read file"),
         ),
         allowed_tools=frozenset({"read_workspace_file"}),
-        workspace_relative="task",
         failure_policy="stop",
     )
 
@@ -26,4 +26,22 @@ def test_analyst_context_excludes_acceptance_evidence_and_history() -> None:
 
 def test_verifier_context_excludes_executor_claims() -> None:
     context = ContextBuilder().verifier(task(), {"steps": []}, (), ({"sha256": "a" * 64},))
-    assert set(context) == {"acceptance_criteria", "approved_plan", "execution_records", "evidence"}
+    assert set(context) == {
+        "acceptance_criteria",
+        "approved_plan",
+        "execution_records",
+        "evidence",
+        "final_artifacts",
+    }
+
+
+def test_agent_context_keeps_memory_layers_separate() -> None:
+    context = AgentContextBuilder().chat(
+        agent_id="architect",
+        user_text="fix it",
+        memory=MemoryContextBundle.empty(),
+    )
+
+    assert context["hard_memory"] == []
+    assert context["environment"] is None
+    assert context["episodic_memories"] == []

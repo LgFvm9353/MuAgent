@@ -7,10 +7,13 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import Settings
 from app.contracts.execution import ExecutionPlan, ExecutionStep
 from app.contracts.task import TaskContract
 from app.harness.pricing import estimate_cost
 from app.harness.registry import AgentRegistry
+from app.logging import logger
+from app.memory.consolidation import MemoryConsolidationService
 from app.models import (
     AgentRun,
     ConversationMessage,
@@ -46,12 +49,14 @@ class ExecutionService:
         agents: AgentRegistry,
         executor: ToolExecutor,
         workspace_root: Path,
+        settings: Settings,
     ) -> None:
         self._sessions = sessions
         self._runtime = runtime
         self._agents = agents
         self._executor = executor
         self._workspace_root = workspace_root
+        self._settings = settings
 
     async def execute(self, task_id: UUID) -> None:
         contract, plan = await self._load(task_id)
@@ -214,6 +219,21 @@ class ExecutionService:
             }:
                 await FinalSummaryService(session).add(transitioned, reason=reason)
             await session.commit()
+        if self._settings.memory_enabled and self._settings.memory_auto_consolidation_enabled:
+            await self._consolidate_memory(task_id, auto_activate=target is TaskState.SUCCEEDED)
+
+    async def _consolidate_memory(self, task_id: UUID, *, auto_activate: bool) -> None:
+        try:
+            async with self._sessions() as session:
+                service = MemoryConsolidationService(
+                    session,
+                    owner_id=self._settings.memory_default_owner_id,
+                    retention_days=self._settings.memory_retention_days,
+                )
+                job_id = await service.enqueue(task_id, auto_activate=auto_activate)
+                await service.process(job_id)
+        except Exception:
+            logger().exception("memory_consolidation_failed", task_id=str(task_id))
 
     async def _load(self, task_id: UUID) -> tuple[TaskContract, ExecutionPlan]:
         async with self._sessions() as session:

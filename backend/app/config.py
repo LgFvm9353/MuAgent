@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     context_model_windows: str = ""
     context_model_max_output_tokens: str = ""
     context_recent_messages: int = Field(default=12, ge=2, le=100)
+    memory_enabled: bool = False
+    memory_hard_enabled: bool = True
+    memory_environment_enabled: bool = True
+    memory_episodic_enabled: bool = True
+    memory_auto_consolidation_enabled: bool = False
+    memory_default_owner_id: str = Field(default="local-user", min_length=1, max_length=100)
+    memory_max_context_items: int = Field(default=5, ge=1, le=20)
+    memory_max_context_tokens: int = Field(default=8_000, ge=512, le=64_000)
+    memory_min_retrieval_score: float = Field(default=0.35, ge=0, le=1)
+    memory_consolidation_max_attempts: int = Field(default=3, ge=1, le=10)
+    memory_retention_days: int = Field(default=365, ge=1, le=3_650)
+    memory_environment_max_file_bytes: int = Field(default=262_144, ge=1_024, le=2_097_152)
     tool_timeout_seconds: float = Field(default=120.0, gt=0)
     mention_execution_tools: str = (
         "list_workspace_files,read_workspace_file,create_workspace_file,"
