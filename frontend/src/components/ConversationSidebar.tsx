@@ -44,8 +44,8 @@ export function ConversationSidebar({
             onClick={() => onSelect(conversation)}
           >
             <span className="line-clamp-2 text-left text-sm leading-5">{conversation.title}</span>
-            <span className="mt-2 flex items-center justify-between text-xs text-zinc-500">
-              <span className="flex items-center gap-1"><CircleDot size={11}/>{conversation.latest_task_state ? labels[conversation.latest_task_state] || '进行中' : '空对话'}</span>
+            <span className={`mt-2 flex items-center text-xs text-zinc-500 ${conversation.latest_task_state ? 'justify-between' : 'justify-end'}`}>
+              {conversation.latest_task_state && <span className="flex items-center gap-1"><CircleDot size={11}/>{labels[conversation.latest_task_state] || '进行中'}</span>}
               <time>{parseApiDate(conversation.updated_at).toLocaleDateString('zh-CN')}</time>
             </span>
           </button>)}
