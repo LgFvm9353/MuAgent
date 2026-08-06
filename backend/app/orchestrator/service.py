@@ -33,12 +33,17 @@ class OrchestratorService:
         agents: AgentRegistry,
         tools: ToolRegistry,
         collaboration_sink: CollaborationSink | None = None,
+        max_specialists: int = 8,
     ) -> None:
         self._sessions = sessions
         self._runtime = runtime
         self._agents = agents
         self._tools = tools
-        self._scheduler = Scheduler(runtime, collaboration_sink)
+        self._scheduler = Scheduler(
+            runtime,
+            collaboration_sink,
+            max_specialists=max_specialists,
+        )
 
     async def run(
         self,
@@ -118,7 +123,7 @@ class OrchestratorService:
                         estimated_cost_usd=estimated_cost,
                     )
                 )
-                if invocation.phase in {"analysis", "review", "design"}:
+                if invocation.phase in {"specialist", "specialist_completed"}:
                     session.add(
                         Proposal(
                             task_id=task_id,

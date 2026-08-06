@@ -185,7 +185,7 @@ export interface ChatMessage {
 export type StreamStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error'
 export type ToastTone = 'success' | 'warning' | 'error'
 
-export type WorkspaceAgentId = 'architect' | 'reviewer' | 'designer'
+export type WorkspaceAgentId = 'scout' | 'researcher' | 'planner' | 'worker' | 'reviewer' | 'context-builder' | 'oracle' | 'delegate'
 export type WorkspaceAgentStatus = 'idle' | 'waiting' | 'running' | 'completed' | 'failed'
 
 export interface WorkspaceAgentState {

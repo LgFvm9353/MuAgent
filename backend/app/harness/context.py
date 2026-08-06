@@ -69,57 +69,36 @@ class AgentContextBuilder:
 
 
 class ContextBuilder:
-    def analyst(self, task: TaskContract) -> dict[str, Any]:
-        return {
-            "goal": task.goal,
-            "inputs": task.inputs,
-            "constraints": task.constraints,
-            "allowed_tools": sorted(task.allowed_tools),
-            "denied_tools": sorted(task.denied_tools),
-        }
-
-    def architect(self, task: TaskContract) -> dict[str, Any]:
-        return {
-            "task": task.model_dump(mode="json"),
-            "instruction": "Propose the smallest sound technical approach for this software task.",
-        }
-
-    def reviewer(
+    def specialist(
         self,
         task: TaskContract,
-        architecture: dict[str, Any] | None = None,
+        agent_id: str,
+        role_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        role_context = role_context or {}
         return {
             "task": task.model_dump(mode="json"),
-            "architecture_proposal": architecture,
-        }
-
-    def designer(
-        self,
-        task: TaskContract,
-        architecture: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return {
-            "task": task.model_dump(mode="json"),
-            "architecture_proposal": architecture,
+            "agent_id": agent_id,
+            "role_context": role_context,
+            "workspace": {"files": role_context.get("workspace_files", [])},
+            "instruction": (
+                "Work independently from this immutable task snapshot and do not claim "
+                "actions you did not perform."
+            ),
         }
 
     def planner(
         self,
         task: TaskContract,
-        architecture: dict[str, Any],
-        review: dict[str, Any] | None,
-        design: dict[str, Any] | None,
+        briefs: tuple[dict[str, Any], ...],
         tool_catalog: tuple[dict[str, Any], ...],
         workspace_files: frozenset[str] = frozenset(),
         specialist_failures: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),
-            "architecture_proposal": architecture,
-            "code_review": review,
-            "design_feedback": design,
-            "specialist_failures": specialist_failures,
+            "child_briefs": briefs,
+            "specialist_failures": list(specialist_failures),
             "tool_catalog": tool_catalog,
             "workspace": {
                 "empty": not workspace_files,

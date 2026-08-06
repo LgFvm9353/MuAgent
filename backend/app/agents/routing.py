@@ -2,11 +2,11 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from app.harness.registry import AgentRegistry
 from app.contracts.collaboration import CollaborationMode
+from app.harness.registry import AgentRegistry
 
 RouteSource = Literal["explicit", "rule", "fallback"]
-_MENTION = re.compile(r"(?<![\w@])@([\w\-一-鿿]+)", re.UNICODE)
+_MENTION = re.compile(r"(?<![\w@])@([\w-]+)", re.UNICODE)
 _SIDE_EFFECT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -59,24 +59,22 @@ class AgentRouter:
         scored.sort(reverse=True)
         selected = tuple(item[2] for item in scored[: self._max_auto_agents])
         if selected:
-            best_score = scored[0][0]
             return RouteDecision(
                 agent_ids=selected,
                 mode=CollaborationMode.PARALLEL if len(selected) > 1 else CollaborationMode.SINGLE,
                 source="rule",
-                confidence=min(0.95, 0.65 + best_score * 0.1),
+                confidence=min(0.95, 0.65 + scored[0][0] * 0.1),
                 reason_code="keyword_capability_match",
                 mentions=(),
                 requires_execution=self.requires_execution(text),
             )
 
-        fallback = self._registry.get("architect").agent_id
         return RouteDecision(
-            agent_ids=(fallback,),
+            agent_ids=(self._registry.get("delegate").agent_id,),
             mode=CollaborationMode.SINGLE,
             source="fallback",
             confidence=0.4,
-            reason_code="default_architect",
+            reason_code="default_delegate",
             mentions=(),
             requires_execution=self.requires_execution(text),
         )

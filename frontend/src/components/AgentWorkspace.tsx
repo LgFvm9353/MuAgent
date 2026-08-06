@@ -1,30 +1,28 @@
-import { Check, Circle, DraftingCompass, LoaderCircle, SearchCheck, TriangleAlert } from 'lucide-react'
+import { Check, Circle, Compass, FileSearch, GitBranch, Lightbulb, LoaderCircle, SearchCheck, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { useEffect, useState, type ComponentType } from 'react'
 import { apiDateTimestamp, parseApiDate } from '../lib/dateTime'
-import type { AgentWorkspaceState, WorkspaceAgentId, WorkspaceAgentState } from '../types/api'
+import type { AgentWorkspaceState, WorkspaceAgentState } from '../types/api'
 
-const metadata: Record<WorkspaceAgentId, { name: string; role: string; icon: ComponentType<{ size?: number }> }> = {
-  architect: { name: 'Architect', role: '分析、委派与汇总规划', icon: DraftingCompass },
-  reviewer: { name: 'Reviewer', role: '技术审查、测试与验证', icon: SearchCheck },
-  designer: { name: 'Designer', role: '产品方案与交互体验', icon: Circle },
+const metadata: Record<string, { name: string; role: string; icon: ComponentType<{ size?: number }> }> = {
+  scout: { name: 'Scout', role: 'Local codebase reconnaissance', icon: Compass },
+  researcher: { name: 'Researcher', role: 'External documentation and evidence', icon: FileSearch },
+  planner: { name: 'Planner', role: 'Plan synthesis and replanning', icon: GitBranch },
+  worker: { name: 'Worker', role: 'Implementation and validation', icon: Lightbulb },
+  reviewer: { name: 'Reviewer', role: 'Review, testing and verification', icon: SearchCheck },
+  'context-builder': { name: 'Context Builder', role: 'Deep context preparation', icon: FileSearch },
+  oracle: { name: 'Oracle', role: 'Adversarial second opinion', icon: ShieldCheck },
+  delegate: { name: 'Delegate', role: 'General-purpose delegation', icon: Circle },
 }
 
-const statusLabel = {
-  idle: '等待',
-  waiting: '已委派',
-  running: '运行中',
-  completed: '已完成',
-  failed: '失败',
-}
+const statusLabel = { idle: 'Idle', waiting: 'Waiting', running: 'Running', completed: 'Completed', failed: 'Failed' }
 
 function formatDuration(start: string | null, end: string | null, now: number): string | null {
   if (!start) return null
   const elapsed = Math.max(0, (end ? apiDateTimestamp(end) : now) - apiDateTimestamp(start))
   if (!Number.isFinite(elapsed)) return null
-  if (elapsed < 1000) return '<1 秒'
+  if (elapsed < 1000) return '<1s'
   const seconds = Math.floor(elapsed / 1000)
-  if (seconds < 60) return `${seconds} 秒`
-  return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
 }
 
 function StatusIcon({ agent }: { agent: WorkspaceAgentState }) {
@@ -35,7 +33,7 @@ function StatusIcon({ agent }: { agent: WorkspaceAgentState }) {
 }
 
 function AgentCard({ agent, now }: { agent: WorkspaceAgentState; now: number }) {
-  const item = metadata[agent.id]
+  const item = metadata[agent.id] ?? { name: agent.id, role: 'Capability agent', icon: Circle }
   const Icon = item.icon
   const duration = formatDuration(agent.startedAt, agent.completedAt, now)
   return <article className={`agent-workspace-card agent-workspace-${agent.id} agent-workspace-status-${agent.status}`}>
@@ -44,38 +42,26 @@ function AgentCard({ agent, now }: { agent: WorkspaceAgentState; now: number }) 
       <div className="min-w-0"><h4>{item.name}</h4><p>{item.role}</p></div>
       <span className="agent-workspace-status"><StatusIcon agent={agent}/>{statusLabel[agent.status]}</span>
     </div>
-    <div className="agent-workspace-card-body">
-      <strong>{agent.phase}</strong>
-      <p>{agent.summary}</p>
-    </div>
+    <div className="agent-workspace-card-body"><strong>{agent.phase}</strong><p>{agent.summary}</p></div>
     <div className="agent-workspace-card-footer">
-      <span>{duration ? `耗时 ${duration}` : '尚未开始'}</span>
-      {agent.updatedAt && <time dateTime={agent.updatedAt}>{parseApiDate(agent.updatedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time>}
+      <span>{duration ? `Elapsed ${duration}` : 'Not started'}</span>
+      {agent.updatedAt && <time dateTime={agent.updatedAt}>{parseApiDate(agent.updatedAt).toLocaleTimeString()}</time>}
     </div>
   </article>
 }
 
 export function AgentWorkspace({ agents, compact = false }: { agents: AgentWorkspaceState; compact?: boolean }) {
-  const hasRunningAgent = Object.values(agents).some((agent) => agent.status === 'running')
+  const values = Object.values(agents)
+  const hasRunningAgent = values.some((agent) => agent.status === 'running')
   const [now, setNow] = useState(Date.now())
-
   useEffect(() => {
     if (!hasRunningAgent) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [hasRunningAgent])
 
-  return <section className={`agent-workspace${compact ? ' agent-workspace-compact' : ''}`} aria-label="三 Agent 实时工作区" aria-live="polite">
-    {!compact && <div className="agent-workspace-heading">
-      <div><span className="eyebrow">实时协作</span><h3>三 Agent 工作区</h3></div>
-      <p>Parent 将 child agents 以 fresh context 并行启动，完成后统一聚合结果。</p>
-    </div>}
-    <div className="agent-workspace-flow">
-      <AgentCard agent={agents.architect} now={now}/>
-      <div className="agent-workspace-specialists">
-        <AgentCard agent={agents.reviewer} now={now}/>
-        <AgentCard agent={agents.designer} now={now}/>
-      </div>
-    </div>
+  return <section className={`agent-workspace${compact ? ' agent-workspace-compact' : ''}`} aria-label="Capability agent workspace" aria-live="polite">
+    {!compact && <div className="agent-workspace-heading"><div><span className="eyebrow">Live collaboration</span><h3>Capability Agent Workspace</h3></div><p>Selected specialists run in parallel from the same task snapshot; Planner synthesizes the result.</p></div>}
+    <div className="agent-workspace-flow">{values.map((agent) => <AgentCard key={agent.id} agent={agent} now={now}/>)}</div>
   </section>
 }

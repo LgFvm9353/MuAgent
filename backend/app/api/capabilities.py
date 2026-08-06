@@ -9,7 +9,8 @@ router = APIRouter(tags=["capabilities"])
 async def list_skills(request: Request) -> list[dict[str, Any]]:
     registry = request.app.state.skill_registry
     skills: list[dict[str, Any]] = []
-    for agent_id in ("architect", "reviewer", "designer"):
+    for definition in request.app.state.coordinator.agent_registry.all():
+        agent_id = definition.agent_id
         for skill in registry.list_for_agent(agent_id):
             if any(item["id"] == skill.id for item in skills):
                 continue

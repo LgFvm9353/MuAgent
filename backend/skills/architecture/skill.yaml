@@ -2,7 +2,9 @@ id: architecture
 version: 1.0.0
 description: Analyze system architecture and implementation boundaries.
 allowed_agents:
-  - architect
+  - planner
+  - scout
+  - context-builder
 allowed_tools:
   - list_workspace_files
   - read_workspace_file

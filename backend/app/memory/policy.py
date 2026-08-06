@@ -17,7 +17,18 @@ class HardMemoryField:
 _ALL_SOURCES: frozenset[MemorySource] = frozenset(
     {"settings_ui", "explicit_user", "confirmed_candidate"}
 )
-_ALL_AGENTS = frozenset({"architect", "reviewer", "designer", "planner", "verifier"})
+_ALL_AGENTS = frozenset(
+    {
+        "scout",
+        "researcher",
+        "planner",
+        "worker",
+        "reviewer",
+        "context-builder",
+        "oracle",
+        "delegate",
+    }
+)
 
 HARD_MEMORY_FIELDS: dict[tuple[str, str], HardMemoryField] = {
     ("response", "language"): HardMemoryField(TypeAdapter(str), _ALL_SOURCES, _ALL_AGENTS),

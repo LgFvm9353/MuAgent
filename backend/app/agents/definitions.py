@@ -2,19 +2,19 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from app.config import Settings
-from app.contracts.agents import AgentProposal, DesignFeedback, ReviewFeedback, VerificationReport
+from app.config import AgentId, Settings
+from app.contracts.agents import AgentBrief, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.harness.registry import AgentDefinition, AgentRegistry
 
 
 def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistry:
+    docs_tools = frozenset({"mcp.context7.resolve-library-id", "mcp.context7.query-docs"})
+    workspace_tools = settings.mention_execution_tool_set
+
     def definition(
-        agent_id: str,
+        agent_id: AgentId,
         role: str,
-        prompt: str,
-        output_model: type[BaseModel],
-        model: str,
         *,
         display_name: str,
         description: str,
@@ -29,11 +29,11 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
         return AgentDefinition(
             agent_id=agent_id,
             role=role,
-            model=model,
-            prompt_path=prompts_root / prompt,
-            prompt_version="v1",
-            schema_version="v1",
-            output_model=output_model,
+            model=settings.agent_model(agent_id),
+            prompt_path=prompts_root / "subagents" / f"{agent_id}.txt",
+            prompt_version="v2",
+            schema_version="v2",
+            output_model=AgentBrief,
             allowed_tools=allowed_tools,
             timeout_seconds=settings.model_timeout_seconds,
             max_retries=2,
@@ -43,85 +43,121 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             mention_aliases=mention_aliases,
             routing_keywords=routing_keywords,
             can_request_execution=can_request_execution,
-            stage_prompts={stage: prompts_root / path for stage, path in stage_prompts.items()}
-            if stage_prompts
-            else None,
+            stage_prompts={
+                stage: prompts_root / "subagents" / path
+                for stage, path in (stage_prompts or {}).items()
+            }
+            or None,
             stage_output_models=stage_output_models,
         )
 
     return AgentRegistry(
         (
             definition(
-                "architect",
-                "software architecture, execution planning, and replanning",
-                "architect/v1.txt",
-                AgentProposal,
-                settings.agent_model("architect"),
-                display_name="Architect",
-                description="负责需求分析、架构设计、实现规划和重规划。",
-                capabilities=frozenset({"architecture", "planning", "backend"}),
-                mention_aliases=("架构师",),
-                routing_keywords=("架构", "后端", "数据库", "性能", "接口", "规划", "实现计划"),
-                allowed_tools=frozenset(
-                    {"mcp.context7.resolve-library-id", "mcp.context7.query-docs"}
+                "scout",
+                "fast local codebase reconnaissance",
+                display_name="Scout",
+                description="Locate relevant files, entry points, data flow, and risks.",
+                capabilities=frozenset({"codebase", "recon", "analysis"}),
+                mention_aliases=("侦察", "代码侦察"),
+                routing_keywords=("代码库", "调用链", "入口", "定位", "scout", "recon"),
+            ),
+            definition(
+                "researcher",
+                "external documentation and evidence research",
+                display_name="Researcher",
+                description=(
+                    "Research official documentation and current external facts with sources."
                 ),
+                capabilities=frozenset({"research", "documentation", "standards"}),
+                mention_aliases=("研究员", "资料研究"),
+                routing_keywords=("官方文档", "最新", "主流", "规范", "版本", "research", "docs"),
+                allowed_tools=docs_tools,
+            ),
+            definition(
+                "planner",
+                "implementation planning and replanning",
+                display_name="Planner",
+                description="Synthesize child findings into a bounded executable plan.",
+                capabilities=frozenset({"planning", "architecture", "replanning"}),
+                mention_aliases=("规划师", "计划"),
+                routing_keywords=("计划", "规划", "方案", "架构", "怎么改", "planner", "plan"),
+                allowed_tools=docs_tools,
+                stage_prompts={"planning": "planner.txt", "replanning": "planner.txt"},
+                stage_output_models={"planning": ExecutionPlan, "replanning": ExecutionPlan},
+            ),
+            definition(
+                "worker",
+                "implementation and validation",
+                display_name="Worker",
+                description="Implement approved work, validate it, and report evidence.",
+                capabilities=frozenset({"implementation", "coding", "execution"}),
+                mention_aliases=("执行者", "开发者"),
+                routing_keywords=(
+                    "实现",
+                    "修改",
+                    "修复",
+                    "编写",
+                    "执行",
+                    "worker",
+                    "implement",
+                    "fix",
+                ),
+                allowed_tools=workspace_tools | docs_tools,
                 can_request_execution=True,
-                stage_prompts={
-                    "planning": "architect/planner-v1.txt",
-                    "replanning": "architect/planner-v1.txt",
-                },
-                stage_output_models={
-                    "planning": ExecutionPlan,
-                    "replanning": ExecutionPlan,
-                },
             ),
             definition(
                 "reviewer",
-                "code review, test strategy, and independent verification",
-                "reviewer/v1.txt",
-                ReviewFeedback,
-                settings.agent_model("reviewer"),
+                "independent review, testing, and verification",
                 display_name="Reviewer",
-                description="负责批判性审查、测试、安全、风险识别和验证。",
+                description="Review plans and changes for correctness, tests, risk, and scope.",
                 capabilities=frozenset({"review", "testing", "security", "verification"}),
-                mention_aliases=("审查员",),
-                routing_keywords=("审查", "错误", "bug", "安全", "测试", "验证", "风险"),
-                allowed_tools=frozenset(
-                    {"mcp.context7.resolve-library-id", "mcp.context7.query-docs"}
-                ),
-                stage_prompts={"verification": "verifier/v1.txt"},
+                mention_aliases=("审查员", "评审"),
+                routing_keywords=("审查", "评审", "测试", "安全", "风险", "review", "test", "bug"),
+                allowed_tools=docs_tools,
+                stage_prompts={"verification": "verifier.txt"},
                 stage_output_models={"verification": VerificationReport},
             ),
             definition(
-                "designer",
-                "creative direction and interface design",
-                "designer/v1.txt",
-                DesignFeedback,
-                settings.agent_model("designer"),
-                display_name="Designer",
-                description="负责前端体验、交互、布局和视觉设计。",
-                capabilities=frozenset({"design", "frontend", "ux"}),
-                mention_aliases=("设计师",),
+                "context-builder",
+                "deep context preparation and handoff material",
+                display_name="Context Builder",
+                description="Build a complete task context before planning large work.",
+                capabilities=frozenset({"context", "handoff", "codebase"}),
+                mention_aliases=("上下文构建", "上下文"),
+                routing_keywords=("完整上下文", "交接", "大型重构", "context", "handoff"),
+            ),
+            definition(
+                "oracle",
+                "adversarial second opinion before action",
+                display_name="Oracle",
+                description=(
+                    "Challenge assumptions and recommend the safest next move without editing."
+                ),
+                capabilities=frozenset({"second-opinion", "decision", "risk"}),
+                mention_aliases=("顾问", "第二意见"),
                 routing_keywords=(
-                    "页面",
-                    "组件",
-                    "交互",
-                    "布局",
-                    "样式",
-                    "视觉",
-                    "用户体验",
-                    "ui",
-                    "ux",
+                    "第二意见",
+                    "是否合理",
+                    "挑战",
+                    "决策",
+                    "权衡",
+                    "oracle",
+                    "opinion",
                 ),
-                allowed_tools=frozenset(
-                    {
-                        "mcp.context7.resolve-library-id",
-                        "mcp.context7.query-docs",
-                        "mcp.playwright.playwright_get_visible_text",
-                        "mcp.playwright.playwright_get_visible_html",
-                        "mcp.playwright.playwright_console_logs",
-                    }
+                allowed_tools=docs_tools,
+            ),
+            definition(
+                "delegate",
+                "general-purpose bounded delegation",
+                display_name="Delegate",
+                description=(
+                    "Handle a clearly scoped task that does not require a specialized profile."
                 ),
+                capabilities=frozenset({"general", "analysis", "delegation"}),
+                mention_aliases=("委派", "助手"),
+                routing_keywords=("委派", "独立处理", "帮忙", "delegate"),
+                allowed_tools=docs_tools,
             ),
         )
     )

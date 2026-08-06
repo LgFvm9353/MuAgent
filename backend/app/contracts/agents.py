@@ -9,32 +9,18 @@ class ChatAgentReply(ContractModel):
     text: str = Field(min_length=1, max_length=20_000)
 
 
-class ParallelSynthesisReply(ContractModel):
-    text: str = Field(min_length=1, max_length=20_000)
+class AgentBrief(ContractModel):
+    """Task-scoped result returned by capability-oriented child agents."""
 
-
-class AgentProposal(ContractModel):
-    summary: str = Field(min_length=1, max_length=5_000)
-    assumptions: tuple[str, ...] = ()
-    risks: tuple[str, ...] = ()
-    expected_artifacts: tuple[str, ...] = ()
-    confidence: float = Field(ge=0, le=1)
-
-
-class ReviewFeedback(ContractModel):
     summary: str = Field(min_length=1, max_length=5_000)
     findings: tuple[str, ...] = ()
-    required_tests: tuple[str, ...] = ()
-    blocking_issues: tuple[str, ...] = ()
-    confidence: float = Field(ge=0, le=1)
-
-
-class DesignFeedback(ContractModel):
-    summary: str = Field(min_length=1, max_length=5_000)
     recommendations: tuple[str, ...] = ()
-    interaction_risks: tuple[str, ...] = ()
-    applicable: bool = True
+    risks: tuple[str, ...] = ()
     confidence: float = Field(ge=0, le=1)
+
+
+class ParallelSynthesisReply(ContractModel):
+    text: str = Field(min_length=1, max_length=20_000)
 
 
 class VerificationReport(ContractModel):

@@ -371,6 +371,7 @@ class Coordinator:
                 self._agents,
                 tools,
                 conversation_sink,
+                max_specialists=self._settings.collaboration_max_agents,
             )
             orchestrator = OrchestratorService(
                 self._sessions,

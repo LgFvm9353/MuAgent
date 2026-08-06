@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from app.contracts.agents import AgentProposal, DesignFeedback, ReviewFeedback, VerificationReport
+from app.contracts.agents import AgentBrief, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.context import ContextBuilder
@@ -61,61 +61,36 @@ class AgentRuntime:
         self._invocations.clear()
         return invocations
 
-    async def architect(self, task: TaskContract) -> AgentProposal:
+    async def specialist(
+        self, agent_id: str, task: TaskContract, role_context: dict[str, Any] | None = None
+    ) -> AgentBrief:
         return cast(
-            AgentProposal,
-            await self._call("architect", "analysis", self._context.architect(task), AgentProposal),
-        )
-
-    async def reviewer(
-        self,
-        task: TaskContract,
-        architecture: AgentProposal | None = None,
-    ) -> ReviewFeedback:
-        context = self._context.reviewer(
-            task,
-            architecture.model_dump(mode="json") if architecture is not None else None,
-        )
-        return cast(
-            ReviewFeedback,
-            await self._call("reviewer", "review", context, ReviewFeedback),
-        )
-
-    async def designer(
-        self,
-        task: TaskContract,
-        architecture: AgentProposal | None = None,
-    ) -> DesignFeedback:
-        context = self._context.designer(
-            task,
-            architecture.model_dump(mode="json") if architecture is not None else None,
-        )
-        return cast(
-            DesignFeedback,
-            await self._call("designer", "design", context, DesignFeedback),
+            AgentBrief,
+            await self._call(
+                agent_id,
+                "specialist",
+                self._context.specialist(task, agent_id, role_context),
+                AgentBrief,
+            ),
         )
 
     async def planner(
         self,
         task: TaskContract,
-        architecture: AgentProposal,
-        review: ReviewFeedback | None,
-        design: DesignFeedback | None,
+        briefs: tuple[AgentBrief, ...],
         workspace_files: frozenset[str] = frozenset(),
         specialist_failures: tuple[str, ...] = (),
     ) -> ExecutionPlan:
         context = self._context.planner(
             task,
-            architecture.model_dump(mode="json"),
-            review.model_dump(mode="json") if review is not None else None,
-            design.model_dump(mode="json") if design is not None else None,
+            tuple(brief.model_dump(mode="json") for brief in briefs),
             self._tools.catalog(task.allowed_tools),
             workspace_files,
             specialist_failures,
         )
         return cast(
             ExecutionPlan,
-            await self._call("architect", "planning", context, ExecutionPlan),
+            await self._call("planner", "planning", context, ExecutionPlan),
         )
 
     async def replanner(
@@ -136,7 +111,7 @@ class AgentRuntime:
         )
         return cast(
             ExecutionPlan,
-            await self._call("architect", "replanning", context, ExecutionPlan),
+            await self._call("planner", "replanning", context, ExecutionPlan),
         )
 
     async def verifier(
@@ -162,26 +137,13 @@ class AgentRuntime:
     async def _call(
         self,
         agent_id: str,
-        phase: str | dict[str, Any],
-        context: dict[str, Any]
-        | type[AgentProposal]
-        | type[ReviewFeedback]
-        | type[DesignFeedback]
-        | type[ExecutionPlan]
-        | type[VerificationReport],
-        output_model: type[AgentProposal]
-        | type[ReviewFeedback]
-        | type[DesignFeedback]
+        phase: str,
+        context: dict[str, Any] | type[AgentBrief] | type[ExecutionPlan] | type[VerificationReport],
+        output_model: type[AgentBrief]
         | type[ExecutionPlan]
         | type[VerificationReport]
         | None = None,
     ) -> object:
-        if isinstance(phase, dict):
-            if not isinstance(context, type) or output_model is not None:
-                raise TypeError("legacy agent call requires context and output model")
-            output_model = context
-            context = phase
-            phase = "analysis"
         if output_model is None or not isinstance(context, dict):
             raise TypeError("agent call requires context and output model")
         definition = self._agents.get(agent_id)

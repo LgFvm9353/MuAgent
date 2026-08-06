@@ -1,29 +1,20 @@
 import { Send, Square } from 'lucide-react'
 import { useRef, useState } from 'react'
 
-interface TaskComposerProps {
-  busy: boolean
-  running: boolean
-  onSubmit: (goal: string) => Promise<boolean>
-  onCancel: () => Promise<void>
-}
-
-interface AgentOption {
-  id: 'architect' | 'reviewer' | 'designer'
-  name: string
-  description: string
-}
-
-interface MentionQuery {
-  start: number
-  end: number
-  query: string
-}
+interface TaskComposerProps { busy: boolean; running: boolean; onSubmit: (goal: string) => Promise<boolean>; onCancel: () => Promise<void> }
+type AgentId = 'scout' | 'researcher' | 'planner' | 'worker' | 'reviewer' | 'context-builder' | 'oracle' | 'delegate'
+interface AgentOption { id: AgentId; name: string; description: string }
+interface MentionQuery { start: number; end: number; query: string }
 
 const agentOptions: AgentOption[] = [
-  { id: 'architect', name: 'Architect', description: '架构、后端与实现规划' },
-  { id: 'reviewer', name: 'Reviewer', description: '审查、测试、安全与验证' },
-  { id: 'designer', name: 'Designer', description: '前端、交互与视觉设计' },
+  { id: 'scout', name: 'Scout', description: 'Local codebase reconnaissance' },
+  { id: 'researcher', name: 'Researcher', description: 'External documentation and facts' },
+  { id: 'planner', name: 'Planner', description: 'Implementation planning' },
+  { id: 'worker', name: 'Worker', description: 'Implementation and validation' },
+  { id: 'reviewer', name: 'Reviewer', description: 'Review, testing and verification' },
+  { id: 'context-builder', name: 'Context Builder', description: 'Deep task context' },
+  { id: 'oracle', name: 'Oracle', description: 'Adversarial second opinion' },
+  { id: 'delegate', name: 'Delegate', description: 'General-purpose delegation' },
 ]
 
 function mentionAtCursor(value: string, cursor: number): MentionQuery | null {
@@ -35,7 +26,7 @@ function mentionAtCursor(value: string, cursor: number): MentionQuery | null {
 }
 
 function selectedAgentIds(value: string): Set<string> {
-  return new Set(Array.from(value.matchAll(/(?:^|\s)@(architect|reviewer|designer)(?=\s|$)/g), (match) => match[1]))
+  return new Set(Array.from(value.matchAll(/(?:^|\s)@(scout|researcher|planner|worker|reviewer|context-builder|oracle|delegate)(?=\s|$)/g), (match) => match[1]))
 }
 
 export function TaskComposer({ busy, running, onSubmit, onCancel }: TaskComposerProps) {
@@ -43,113 +34,33 @@ export function TaskComposer({ busy, running, onSubmit, onCancel }: TaskComposer
   const [error, setError] = useState('')
   const [mention, setMention] = useState<MentionQuery | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-
   const selected = selectedAgentIds(goal)
-  const matches = mention
-    ? agentOptions.filter((agent) => (
-        !selected.has(agent.id)
-        && (`${agent.id} ${agent.name}`.toLowerCase().includes(mention.query))
-      ))
-    : []
+  const matches = mention ? agentOptions.filter((agent) => !selected.has(agent.id) && `${agent.id} ${agent.name}`.toLowerCase().includes(mention.query)) : []
   const mentionOpen = Boolean(mention && matches.length > 0)
-
-  const updateMention = (value: string, cursor: number | null) => {
-    setMention(cursor === null ? null : mentionAtCursor(value, cursor))
-  }
-
+  const updateMention = (value: string, cursor: number | null) => setMention(cursor === null ? null : mentionAtCursor(value, cursor))
   const selectAgent = (agent: AgentOption) => {
     if (!mention) return
     const insertion = `@${agent.id} `
     const nextGoal = `${goal.slice(0, mention.start)}${insertion}${goal.slice(mention.end)}`
     const nextCursor = mention.start + insertion.length
-    setGoal(nextGoal)
-    setMention(null)
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus()
-      textareaRef.current?.setSelectionRange(nextCursor, nextCursor)
-    })
+    setGoal(nextGoal); setMention(null)
+    requestAnimationFrame(() => { textareaRef.current?.focus(); textareaRef.current?.setSelectionRange(nextCursor, nextCursor) })
   }
-
   const submit = async () => {
-    if (!goal.trim()) {
-      setError('请输入任务目标')
-      return
-    }
+    if (!goal.trim()) { setError('Enter a task goal'); return }
     setError('')
-    const created = await onSubmit(goal)
-    if (created) {
-      setGoal('')
-      setMention(null)
-    }
+    if (await onSubmit(goal)) { setGoal(''); setMention(null) }
   }
-
   return <div className="composer-wrap">
-    {mentionOpen && <div className="agent-mention-picker" id="agent-mention-options" role="listbox" aria-label="选择 Agent">
-      {matches.map((agent) => <button
-        className="agent-mention-option"
-        key={agent.id}
-        type="button"
-        role="option"
-        aria-selected="false"
-        onMouseDown={(event) => {
-          event.preventDefault()
-          selectAgent(agent)
-        }}
-      >
-        <span className={`agent-mention-avatar agent-mention-${agent.id}`}>{agent.name.at(0)}</span>
-        <span className="agent-mention-copy">
-          <strong>{agent.name} <small>@{agent.id}</small></strong>
-          <span>{agent.description}</span>
-        </span>
+    {mentionOpen && <div className="agent-mention-picker" id="agent-mention-options" role="listbox" aria-label="Select an agent">
+      {matches.map((agent) => <button className="agent-mention-option" key={agent.id} type="button" role="option" onMouseDown={(event) => { event.preventDefault(); selectAgent(agent) }}>
+        <span className={`agent-mention-avatar agent-mention-${agent.id}`}>{agent.name.at(0)}</span><span className="agent-mention-copy"><strong>{agent.name} <small>@{agent.id}</small></strong><span>{agent.description}</span></span>
       </button>)}
     </div>}
     <div className={`composer ${error ? 'composer-error' : ''}`}>
-      <textarea
-        ref={textareaRef}
-        value={goal}
-        onChange={(event) => {
-          setGoal(event.target.value)
-          updateMention(event.target.value, event.target.selectionStart)
-          if (error) setError('')
-        }}
-        onClick={(event) => updateMention(event.currentTarget.value, event.currentTarget.selectionStart)}
-        onKeyUp={(event) => {
-          if (!['Enter', 'Escape'].includes(event.key)) {
-            updateMention(event.currentTarget.value, event.currentTarget.selectionStart)
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape' && mention) {
-            event.preventDefault()
-            setMention(null)
-            return
-          }
-          if (event.key === 'Enter' && mentionOpen && !event.ctrlKey && !event.metaKey) {
-            event.preventDefault()
-            selectAgent(matches[0])
-            return
-          }
-          if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
-            event.preventDefault()
-            void submit()
-          }
-        }}
-        rows={2}
-        maxLength={10000}
-        placeholder="描述你希望 Agent 完成的任务…"
-        disabled={busy}
-        aria-autocomplete="list"
-        aria-controls="agent-mention-options"
-        aria-expanded={mentionOpen}
-      />
-      <div className="flex items-end gap-2">
-        {running && <button className="cancel-button" onClick={() => void onCancel()} disabled={busy} title="取消当前任务"><Square size={15}/></button>}
-        <button className="send-button" onClick={() => void submit()} disabled={busy || !goal.trim()} title="发送任务"><Send size={18}/></button>
-      </div>
+      <textarea ref={textareaRef} value={goal} onChange={(event) => { setGoal(event.target.value); updateMention(event.target.value, event.target.selectionStart); if (error) setError('') }} onClick={(event) => updateMention(event.currentTarget.value, event.currentTarget.selectionStart)} onKeyUp={(event) => { if (!['Enter', 'Escape'].includes(event.key)) updateMention(event.currentTarget.value, event.currentTarget.selectionStart) }} onKeyDown={(event) => { if (event.key === 'Escape' && mention) { event.preventDefault(); setMention(null); return }; if (event.key === 'Enter' && mentionOpen && !event.ctrlKey && !event.metaKey) { event.preventDefault(); selectAgent(matches[0]); return }; if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submit() } }} rows={2} maxLength={10000} placeholder="Describe the task; use @ to select a capability agent" disabled={busy} aria-autocomplete="list" aria-controls="agent-mention-options" aria-expanded={mentionOpen} />
+      <div className="flex items-end gap-2">{running && <button className="cancel-button" onClick={() => void onCancel()} disabled={busy} title="Cancel task"><Square size={15}/></button>}<button className="send-button" onClick={() => void submit()} disabled={busy || !goal.trim()} title="Send task"><Send size={18}/></button></div>
     </div>
-    <div className="mt-2 flex justify-between px-1 text-xs text-zinc-600">
-      <span className="text-red-400">{error}</span>
-      <span>输入 @ 选择 Agent · Ctrl / ⌘ + Enter 发送</span>
-    </div>
+    <div className="mt-2 flex justify-between px-1 text-xs text-zinc-600"><span className="text-red-400">{error}</span><span>Enter a goal · Ctrl / Cmd + Enter to send</span></div>
   </div>
 }

@@ -121,9 +121,9 @@ def format_agent_message(agent_id: str, output: dict[str, Any], phase: str = "di
     explicit = output.get("summary")
     if isinstance(explicit, str) and explicit.strip():
         return explicit.strip(), output
-    if agent_id == "architect" and phase in {"planning", "replanning"}:
+    if agent_id == "planner" and phase in {"planning", "replanning"}:
         steps = output.get("steps")
-        return f"Architect generated an execution plan with {len(steps) if isinstance(steps, list) else 0} steps.", output
+        return f"Planner generated an execution plan with {len(steps) if isinstance(steps, list) else 0} steps.", output
     if agent_id == "reviewer" and phase == "verification":
         return f"Reviewer verification verdict: {output.get('verdict', 'unknown')}.", output
     return f"{agent_id} completed a response.", output

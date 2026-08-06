@@ -2,7 +2,9 @@ id: design
 version: 1.0.0
 description: Design product behavior, interaction states, and usability safeguards.
 allowed_agents:
-  - designer
+  - worker
+  - reviewer
+  - delegate
 allowed_tools:
   - list_workspace_files
   - read_workspace_file
