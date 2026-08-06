@@ -13,9 +13,9 @@ export interface ConversationThread {
   latest_task_state: TaskState | null
 }
 
-export type CollaborationMode = 'parallel' | 'serial'
+export type CollaborationMode = 'single' | 'parallel'
 export type CollaborationPhase =
-  | 'routing' | 'parallel' | 'serial' | 'synthesis'
+  | 'routing' | 'single' | 'parallel' | 'synthesis'
   | 'waiting_confirmation' | 'completed' | 'failed' | 'needs_review'
 
 export interface SkillSummary {

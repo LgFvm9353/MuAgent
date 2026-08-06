@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from app.contracts.collaboration import CollaborationMode
 
-_INTENT_PATTERN = re.compile(r"(?<!\w)#(ideate|execute)\b", re.IGNORECASE)
+_INTENT_PATTERN = re.compile(r"(?<!\w)#(parallel|single)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,16 +18,16 @@ def resolve_collaboration_intent(message: str, target_agent_count: int) -> Colla
     for match in _INTENT_PATTERN.finditer(message):
         tag = match.group(1).casefold()
         explicit_mode = (
-            CollaborationMode.PARALLEL if tag == "ideate" else CollaborationMode.SERIAL
+            CollaborationMode.PARALLEL if tag == "parallel" else CollaborationMode.SINGLE
         )
     cleaned = _INTENT_PATTERN.sub("", message)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
-    if explicit_mode is CollaborationMode.SERIAL:
-        mode = CollaborationMode.SERIAL
+    if explicit_mode is not None:
+        mode = explicit_mode
     elif target_agent_count >= 2:
         mode = CollaborationMode.PARALLEL
     else:
-        mode = CollaborationMode.SERIAL
+        mode = CollaborationMode.SINGLE
     return CollaborationIntent(
         message=cleaned or message,
         mode=mode,

@@ -10,9 +10,14 @@ from app.services.final_summary import FinalSummaryService
 
 
 class TaskService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        conversation_store: object | None = None,
+    ) -> None:
         self._session = session
         self._repository = TaskRepository(session)
+        self._conversation_store = conversation_store
 
     async def create(
         self,
@@ -51,7 +56,7 @@ class TaskService:
                 trace_id=task.trace_id,
                 reason="user requested cancellation",
             )
-            await FinalSummaryService(self._session).add(
+            await FinalSummaryService(self._session, self._conversation_store).add(
                 task,
                 reason="user requested cancellation",
             )

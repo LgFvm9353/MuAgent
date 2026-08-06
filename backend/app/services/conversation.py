@@ -5,15 +5,60 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models import ConversationMessage
+from app.models import ConversationMessage, Task
 from app.orchestrator.scheduler import AgentInvocation
 
 ConversationSink = Callable[[AgentInvocation], Awaitable[None]]
 
-_HISTORY_MESSAGE_TYPES = frozenset({"user_message", "agent_message"})
-_HISTORY_MAX_MESSAGES = 12
-_HISTORY_MAX_MESSAGE_CHARS = 8_000
-_HISTORY_MAX_TOTAL_CHARS = 24_000
+
+class DatabaseConversationStore:
+    """Database-backed transcript adapter used by orchestration services."""
+
+    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+        self._sessions = sessions
+
+    async def relevant_history(self, conversation_id: UUID, *, before_id: int | None = None) -> tuple[dict[str, Any], ...]:
+        async with self._sessions() as session:
+            query = select(ConversationMessage).where(
+                ConversationMessage.conversation_id == conversation_id,
+                ConversationMessage.message_type.in_({"user_message", "agent_message", "parallel_result"}),
+            ).order_by(ConversationMessage.id.desc()).limit(24)
+            if before_id is not None:
+                query = query.where(ConversationMessage.id < before_id)
+            return build_relevant_history(list(await session.scalars(query)))
+
+    async def append(self, conversation_id: UUID, *, agent_id: str, role: str,
+                     message_type: str, phase: str, summary: str,
+                     content: dict[str, Any], source_id: str,
+                     task_id: UUID | None = None, turn_id: UUID | None = None,
+                     agent_run_id: UUID | None = None, mentions: list[str] | None = None,
+                     routing_metadata: dict[str, Any] | None = None,
+                     reply_to_message_id: int | None = None) -> dict[str, Any]:
+        async with self._sessions() as session:
+            existing = await session.scalar(select(ConversationMessage).where(
+                ConversationMessage.conversation_id == conversation_id,
+                ConversationMessage.source_id == source_id,
+            ))
+            if existing is not None:
+                return {"id": existing.id, "source_id": existing.source_id}
+            row = ConversationMessage(
+                conversation_id=conversation_id, task_id=task_id, turn_id=turn_id,
+                agent_run_id=agent_run_id, agent_id=agent_id, role=role,
+                message_type=message_type, phase=phase, summary=summary[:1000],
+                content=content, source_id=source_id, mentions=mentions or [],
+                routing_metadata=routing_metadata or {}, reply_to_message_id=reply_to_message_id,
+            )
+            session.add(row)
+            await session.commit()
+            return {"id": row.id, "source_id": row.source_id}
+
+    async def find_by_source(self, conversation_id: UUID, source_id: str) -> dict[str, Any] | None:
+        async with self._sessions() as session:
+            row = await session.scalar(select(ConversationMessage).where(
+                ConversationMessage.conversation_id == conversation_id,
+                ConversationMessage.source_id == source_id,
+            ))
+            return {"id": row.id, "source_id": row.source_id} if row is not None else None
 
 
 class ConversationService:
@@ -21,9 +66,7 @@ class ConversationService:
         self._sessions = sessions
 
     async def relevant_history(
-        self,
-        conversation_id: UUID,
-        current_turn_id: UUID,
+        self, conversation_id: UUID, current_turn_id: UUID
     ) -> tuple[dict[str, Any], ...]:
         async with self._sessions() as session:
             current_message_id = await session.scalar(
@@ -41,25 +84,26 @@ class ConversationService:
                     .where(
                         ConversationMessage.conversation_id == conversation_id,
                         ConversationMessage.id < current_message_id,
-                        ConversationMessage.message_type.in_(_HISTORY_MESSAGE_TYPES),
+                        ConversationMessage.message_type.in_({"user_message", "agent_message", "parallel_result"}),
                     )
                     .order_by(ConversationMessage.id.desc())
-                    .limit(_HISTORY_MAX_MESSAGES * 2)
+                    .limit(24)
                 )
             )
         return build_relevant_history(messages)
 
     def sink(self, task_id: UUID) -> ConversationSink:
         async def publish(invocation: AgentInvocation) -> None:
-            summary, content = format_agent_message(
-                invocation.agent_id,
-                invocation.output,
-                invocation.phase,
-            )
+            summary, content = format_agent_message(invocation.agent_id, invocation.output, invocation.phase)
             async with self._sessions() as session:
+                task = await session.get(Task, task_id)
+                if task is None:
+                    return
                 session.add(
                     ConversationMessage(
                         task_id=task_id,
+                        conversation_id=task.conversation_id,
+                        turn_id=None,
                         agent_id=invocation.agent_id,
                         role="agent",
                         message_type=invocation.message_type,
@@ -70,57 +114,39 @@ class ConversationService:
                     )
                 )
                 await session.commit()
-
         return publish
 
 
-def build_relevant_history(
-    newest_first: list[ConversationMessage],
-) -> tuple[dict[str, Any], ...]:
+def format_agent_message(agent_id: str, output: dict[str, Any], phase: str = "discussion") -> tuple[str, dict[str, Any]]:
+    explicit = output.get("summary")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip(), output
+    if agent_id == "architect" and phase in {"planning", "replanning"}:
+        steps = output.get("steps")
+        return f"Architect generated an execution plan with {len(steps) if isinstance(steps, list) else 0} steps.", output
+    if agent_id == "reviewer" and phase == "verification":
+        return f"Reviewer verification verdict: {output.get('verdict', 'unknown')}.", output
+    return f"{agent_id} completed a response.", output
+
+
+def build_relevant_history(newest_first: list[Any]) -> tuple[dict[str, Any], ...]:
     selected: list[dict[str, Any]] = []
-    total_chars = 0
+    total = 0
     for message in newest_first:
-        if message.message_type not in _HISTORY_MESSAGE_TYPES:
+        if message.message_type not in {"user_message", "agent_message", "parallel_result"}:
             continue
-        text = message.content.get("text")
+        content = message.content
+        text = content.get("text") if isinstance(content, dict) else None
         if not isinstance(text, str) or not text.strip():
             continue
-        text = text.strip()[:_HISTORY_MAX_MESSAGE_CHARS]
-        if total_chars + len(text) > _HISTORY_MAX_TOTAL_CHARS:
-            remaining = _HISTORY_MAX_TOTAL_CHARS - total_chars
-            if remaining <= 0:
-                break
-            text = text[:remaining]
-        selected.append(
-            {
-                "message_id": message.id,
-                "role": message.role,
-                "agent_id": message.agent_id,
-                "text": text,
-            }
-        )
-        total_chars += len(text)
-        if len(selected) >= _HISTORY_MAX_MESSAGES or total_chars >= _HISTORY_MAX_TOTAL_CHARS:
+        text = text.strip()[:8000]
+        if total + len(text) > 24000:
+            text = text[: 24000 - total]
+        if not text:
+            break
+        selected.append({"message_id": message.id, "role": message.role, "agent_id": message.agent_id, "text": text})
+        total += len(text)
+        if len(selected) >= 12 or total >= 24000:
             break
     selected.reverse()
     return tuple(selected)
-
-
-def format_agent_message(
-    agent_id: str,
-    output: dict[str, Any],
-    phase: str = "discussion",
-) -> tuple[str, dict[str, Any]]:
-    explicit_summary = output.get("summary")
-    if isinstance(explicit_summary, str) and explicit_summary.strip():
-        return explicit_summary.strip(), output
-    if agent_id == "architect" and phase in {"planning", "replanning"}:
-        steps = output.get("steps")
-        count = len(steps) if isinstance(steps, list) else 0
-        summary = f"Architect 生成了包含 {count} 个步骤的执行计划。"
-    elif agent_id == "reviewer" and phase == "verification":
-        verdict = str(output.get("verdict") or "unknown")
-        summary = f"Reviewer 验证结论: {verdict}。"
-    else:
-        summary = f"{agent_id} 已完成发言。"
-    return summary, output

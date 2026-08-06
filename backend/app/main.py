@@ -60,9 +60,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     async with application.state.database.session_factory() as session:
         recovery = RecoveryService(session)
         await recovery.recover(application.state.coordinator.schedule)
-        await recovery.recover_invocations(
-            application.state.coordinator.resume_invocations,
-        )
     try:
         yield
     finally:

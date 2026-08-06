@@ -234,7 +234,7 @@ function Workbench() {
           ? '该请求涉及副作用，已阻止聊天 Agent 直接执行。'
           : turn.collaboration_mode === 'parallel' && turn.selected_agents.length > 1
             ? `${turn.selected_agents.join('、')} 已开始并行独立分析。`
-            : `${turn.selected_agents.join('、')} 已开始串行响应。`,
+            : `${turn.selected_agents.join('、')} 已开始单 Agent 响应。`,
       })
       if (!turn.task_id) {
         for (const delay of [500, 1500, 4000, 8000]) {

@@ -87,7 +87,7 @@ class ContextBuilder:
     def reviewer(
         self,
         task: TaskContract,
-        architecture: dict[str, Any],
+        architecture: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),
@@ -97,7 +97,7 @@ class ContextBuilder:
     def designer(
         self,
         task: TaskContract,
-        architecture: dict[str, Any],
+        architecture: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),

@@ -46,37 +46,6 @@ class Conversation(Base, TimestampMixin):
     )
 
 
-class ConversationContextSummary(Base, TimestampMixin):
-    __tablename__ = "conversation_context_summaries"
-    id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
-    )
-    conversation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
-    )
-    parent_summary_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("conversation_context_summaries.id", ondelete="SET NULL")
-    )
-    level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    source_message_start_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    source_message_end_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    covered_message_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    summary: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    key_message_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False, default=list)
-    source_token_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    summary_token_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    compression_model: Mapped[str] = mapped_column(String(100), nullable=False)
-    tokenizer: Mapped[str] = mapped_column(String(64), nullable=False)
-    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1")
-    failure_code: Mapped[str | None] = mapped_column(String(100))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (
-        Index("ix_context_summary_current", "conversation_id", "status", "created_at"),
-        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
-    )
-
-
 class ConversationTurn(Base, TimestampMixin):
     __tablename__ = "conversation_turns"
     id: Mapped[UUID] = mapped_column(
@@ -127,112 +96,6 @@ class RoutingDecision(Base, TimestampMixin):
     mentions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
 
-class ParallelInvocationRequest(Base, TimestampMixin):
-    __tablename__ = "parallel_invocation_requests"
-    id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
-    )
-    conversation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
-    )
-    turn_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
-    )
-    source_message_id: Mapped[int] = mapped_column(
-        ForeignKey("conversation_messages.id", ondelete="CASCADE")
-    )
-    initiator_agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    callback_agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    targets: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    question: Mapped[str] = mapped_column(String(4000), nullable=False)
-    context: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
-    idempotency_key: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), nullable=False
-    )
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
-    deadline_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, index=True
-    )
-    aggregated_message_id: Mapped[int | None] = mapped_column(
-        ForeignKey("conversation_messages.id", ondelete="SET NULL")
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (
-        UniqueConstraint("conversation_id", "idempotency_key"),
-        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
-    )
-
-
-class ParallelInvocationResponse(Base, TimestampMixin):
-    __tablename__ = "parallel_invocation_responses"
-    id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
-    )
-    request_id: Mapped[UUID] = mapped_column(
-        ForeignKey("parallel_invocation_requests.id", ondelete="CASCADE"), index=True
-    )
-    target_agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
-    content: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    error_type: Mapped[str | None] = mapped_column(String(100))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (
-        UniqueConstraint("request_id", "target_agent_id"),
-        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
-    )
-
-
-class AgentInvocationQueueEntry(Base, TimestampMixin):
-    __tablename__ = "agent_invocation_queue"
-    id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
-    )
-    conversation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), index=True
-    )
-    turn_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
-    )
-    task_id: Mapped[UUID | None] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), index=True
-    )
-    source_agent_id: Mapped[str | None] = mapped_column(String(100))
-    target_agent_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    source_message_id: Mapped[int | None] = mapped_column(
-        ForeignKey("conversation_messages.id", ondelete="SET NULL")
-    )
-    parallel_request_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("parallel_invocation_requests.id", ondelete="SET NULL"), index=True
-    )
-    parallel_response_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("parallel_invocation_responses.id", ondelete="SET NULL"), unique=True, index=True
-    )
-    intent: Mapped[str] = mapped_column(String(32), nullable=False)
-    objective: Mapped[str] = mapped_column(String(4000), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
-    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    dedup_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    lease_owner: Mapped[str | None] = mapped_column(String(100))
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    available_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
-    )
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    error_type: Mapped[str | None] = mapped_column(String(100))
-    __table_args__ = (
-        Index(
-            "ix_invocation_queue_claim",
-            "conversation_id",
-            "target_agent_id",
-            "status",
-            "available_at",
-        ),
-        {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4"},
-    )
-
-
 class Task(Base, TimestampMixin):
     __tablename__ = "tasks"
     id: Mapped[UUID] = mapped_column(
@@ -240,9 +103,6 @@ class Task(Base, TimestampMixin):
     )
     conversation_id: Mapped[UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True
-    )
-    originating_invocation_id: Mapped[UUID | None] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), unique=True, index=True
     )
     trace_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True, native_uuid=False), nullable=False, index=True
@@ -279,12 +139,9 @@ class AgentRun(Base, TimestampMixin):
     turn_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("conversation_turns.id", ondelete="CASCADE"), index=True
     )
-    invocation_queue_entry_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("agent_invocation_queue.id", ondelete="SET NULL"), unique=True, index=True
-    )
     intent: Mapped[str | None] = mapped_column(String(32))
     phase: Mapped[str | None] = mapped_column(String(32))
-    role: Mapped[str | None] = mapped_column(String(32))
+    role: Mapped[str | None] = mapped_column(String(128))
     skill_id: Mapped[str | None] = mapped_column(String(64))
     skill_version: Mapped[str | None] = mapped_column(String(32))
     skill_hash: Mapped[str | None] = mapped_column(String(64))

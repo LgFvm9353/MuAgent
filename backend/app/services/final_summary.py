@@ -4,8 +4,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    AgentInvocationQueueEntry,
-    ConversationMessage,
     EvidenceRecordModel,
     ExecutionPlanRecord,
     ExecutionStepRecord,
@@ -15,18 +13,19 @@ from app.models import (
 
 
 class FinalSummaryService:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        conversation_store: object | None = None,
+    ) -> None:
         self._session = session
+        self._conversation_store = conversation_store
 
     async def add(self, task: Task, *, reason: str) -> None:
         source_id = f"final-summary:{task.id}:{task.version}"
-        existing = await self._session.scalar(
-            select(ConversationMessage).where(
-                ConversationMessage.task_id == task.id,
-                ConversationMessage.source_id == source_id,
-            )
-        )
-        if existing is not None:
+        if self._conversation_store is not None and await self._conversation_store.find_by_source(
+            task.conversation_id, source_id
+        ) is not None:
             return
 
         plan = await self._session.scalar(
@@ -105,23 +104,15 @@ class FinalSummaryService:
                 else "请查看失败证据，并在当前对话中补充要求或重新尝试。"  # noqa: RUF001
             ),
         }
-        origin = None
-        if task.originating_invocation_id is not None:
-            origin = await self._session.get(
-                AgentInvocationQueueEntry, task.originating_invocation_id
+        if self._conversation_store is not None:
+            await self._conversation_store.append(
+                task.conversation_id,
+                task_id=task.id,
+                agent_id="system",
+                role="system",
+                message_type="final_summary",
+                phase="completion",
+                summary=summary,
+                content=content,
+                source_id=source_id,
             )
-        message = ConversationMessage(
-            task_id=task.id,
-            conversation_id=task.conversation_id,
-            turn_id=origin.turn_id if origin is not None else None,
-            reply_to_message_id=origin.source_message_id if origin is not None else None,
-            agent_id="system",
-            role="system",
-            message_type="final_summary",
-            phase="completion",
-            summary=summary,
-            content=content,
-            source_id=source_id,
-        )
-        self._session.add(message)
-        await self._session.flush()

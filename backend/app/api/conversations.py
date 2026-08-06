@@ -7,27 +7,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import database_session
-from app.contracts.conversation import (
-    AgentRunResponse,
-    ConversationCreate,
-    ConversationResponse,
-    ConversationTurnCreate,
-    ConversationTurnResponse,
-)
-from app.models import (
-    AgentRun,
-    Conversation,
-    ConversationMessage,
-    ConversationTurn,
-    RoutingDecision,
-    Task,
-)
-from app.orchestrator.invocation_queue import InvocationQueueRepository, InvocationRequest
-from app.orchestrator.parallel_invocations import ParallelInvocationService
+from app.contracts.collaboration import CollaborationMode
+from app.contracts.conversation import AgentRunResponse, ConversationCreate, ConversationResponse, ConversationTurnCreate, ConversationTurnResponse
+from app.models import AgentRun, Conversation, ConversationMessage, ConversationTurn, RoutingDecision, Task
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskRepository
 
@@ -37,367 +23,113 @@ _TERMINAL_VALUES = {state.value for state in TERMINAL_STATES}
 
 
 def _response(conversation: Conversation, latest: Task | None = None) -> ConversationResponse:
-    return ConversationResponse(
-        id=conversation.id,
-        title=conversation.title,
-        created_at=conversation.created_at,
-        updated_at=conversation.updated_at,
-        latest_task_id=latest.id if latest else None,
-        latest_task_state=latest.state if latest else None,
-    )
+    return ConversationResponse(id=conversation.id, title=conversation.title, created_at=conversation.created_at,
+        updated_at=conversation.updated_at, latest_task_id=latest.id if latest else None,
+        latest_task_state=latest.state if latest else None)
 
 
 async def _latest_task(session: AsyncSession, conversation_id: UUID) -> Task | None:
-    result: Task | None = await session.scalar(
-        select(Task)
-        .where(Task.conversation_id == conversation_id)
-        .order_by(Task.created_at.desc())
-        .limit(1)
-    )
-    return result
+    return await session.scalar(select(Task).where(Task.conversation_id == conversation_id).order_by(Task.created_at.desc()).limit(1))
 
 
 @router.post("", response_model=ConversationResponse, status_code=status.HTTP_201_CREATED)
-async def create_conversation(
-    payload: ConversationCreate, session: Session
-) -> ConversationResponse:
+async def create_conversation(payload: ConversationCreate, session: Session) -> ConversationResponse:
     conversation = Conversation(title=payload.title.strip())
     session.add(conversation)
-    await session.commit()
-    await session.refresh(conversation)
+    await session.commit(); await session.refresh(conversation)
     return _response(conversation)
 
 
 @router.get("", response_model=list[ConversationResponse])
-async def list_conversations(
-    session: Session,
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
-) -> list[ConversationResponse]:
-    conversations = list(
-        await session.scalars(
-            select(Conversation)
-            .order_by(Conversation.updated_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-    )
-    return [
-        _response(conversation, await _latest_task(session, conversation.id))
-        for conversation in conversations
-    ]
+async def list_conversations(session: Session, limit: Annotated[int, Query(ge=1, le=100)] = 50,
+                             offset: Annotated[int, Query(ge=0)] = 0) -> list[ConversationResponse]:
+    conversations = list(await session.scalars(select(Conversation).order_by(Conversation.updated_at.desc()).limit(limit).offset(offset)))
+    return [_response(item, await _latest_task(session, item.id)) for item in conversations]
 
 
 @router.get("/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(conversation_id: UUID, session: Session) -> ConversationResponse:
     conversation = await session.get(Conversation, conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
+    if conversation is None: raise HTTPException(404, "conversation not found")
     return _response(conversation, await _latest_task(session, conversation_id))
 
 
-@router.post(
-    "/{conversation_id}/messages",
-    response_model=ConversationTurnResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_turn(
-    conversation_id: UUID,
-    payload: ConversationTurnCreate,
-    session: Session,
-    request: Request,
-) -> ConversationTurnResponse:
-    conversation = await session.scalar(
-        select(Conversation).where(Conversation.id == conversation_id).with_for_update()
-    )
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
-
+@router.post("/{conversation_id}/messages", response_model=ConversationTurnResponse, status_code=status.HTTP_201_CREATED)
+async def create_turn(conversation_id: UUID, payload: ConversationTurnCreate, session: Session, request: Request) -> ConversationTurnResponse:
+    conversation = await session.scalar(select(Conversation).where(Conversation.id == conversation_id).with_for_update())
+    if conversation is None: raise HTTPException(404, "conversation not found")
+    existing_turn = await session.scalar(select(ConversationTurn).where(ConversationTurn.conversation_id == conversation_id, ConversationTurn.idempotency_key == payload.idempotency_key))
+    if existing_turn is not None:
+        runs = list(await session.scalars(select(AgentRun).where(AgentRun.turn_id == existing_turn.id)))
+        return ConversationTurnResponse(turn_id=existing_turn.id, conversation_id=conversation_id, state=existing_turn.status,
+            collaboration_mode=CollaborationMode(existing_turn.collaboration_mode), synthesize=existing_turn.synthesize,
+            selected_agents=tuple(run.agent_id for run in runs), agent_runs=tuple(AgentRunResponse(id=run.id, agent_id=run.agent_id, model=run.model, status=run.status) for run in runs))
     source_id = f"user:{payload.idempotency_key}"
-    existing = await session.scalar(
-        select(ConversationMessage)
-        .join(Task, Task.id == ConversationMessage.task_id)
-        .where(
-            Task.conversation_id == conversation_id,
-            ConversationMessage.source_id == source_id,
-        )
-    )
-    if existing is not None:
-        task = await session.get(Task, existing.task_id)
-        if task is None:
-            raise HTTPException(status_code=409, detail="idempotent task no longer exists")
-        return ConversationTurnResponse(
-            task_id=task.id,
-            conversation_id=conversation_id,
-            state=task.state,
-        )
-
     if payload.text is not None:
-        existing_turn = await session.scalar(
-            select(ConversationTurn).where(
-                ConversationTurn.conversation_id == conversation_id,
-                ConversationTurn.idempotency_key == payload.idempotency_key,
-            )
-        )
-        if existing_turn is not None:
-            runs = list(
-                await session.scalars(select(AgentRun).where(AgentRun.turn_id == existing_turn.id))
-            )
-            return ConversationTurnResponse(
-                turn_id=existing_turn.id,
-                conversation_id=conversation_id,
-                state=existing_turn.status,
-                selected_agents=tuple(run.agent_id for run in runs),
-                agent_runs=tuple(
-                    AgentRunResponse(
-                        id=run.id, agent_id=run.agent_id, model=run.model, status=run.status
-                    )
-                    for run in runs
-                ),
-            )
-
         decision = request.app.state.coordinator.route_chat(payload.text)
-        turn = ConversationTurn(
-            conversation_id=conversation_id,
-            idempotency_key=payload.idempotency_key,
-            status="escalated" if decision.requires_execution else "running",
-            requires_execution=decision.requires_execution,
-        )
-        session.add(turn)
-        await session.flush()
-        route = RoutingDecision(
-            turn_id=turn.id,
-            source=decision.source,
-            selected_agents=list(decision.agent_ids),
-            confidence=decision.confidence,
-            reason_code=decision.reason_code,
-            mentions=list(decision.mentions),
-        )
+        mode = decision.mode
+        targets = decision.agent_ids[:1] if mode is CollaborationMode.SINGLE else decision.agent_ids
+        if not targets: raise HTTPException(422, "no enabled agent matched the request")
+        turn = ConversationTurn(conversation_id=conversation_id, idempotency_key=payload.idempotency_key,
+            status="running", collaboration_mode=mode.value, collaboration_phase=mode.value,
+            synthesize=mode is CollaborationMode.PARALLEL, requires_execution=decision.requires_execution)
+        session.add(turn); await session.flush()
+        route = RoutingDecision(turn_id=turn.id, source=decision.source, selected_agents=list(targets), confidence=decision.confidence, reason_code=decision.reason_code, mentions=list(decision.mentions))
         session.add(route)
-        await session.flush()
-        user_message = ConversationMessage(
-            conversation_id=conversation_id,
-            turn_id=turn.id,
-            routing_decision_id=route.id,
-            agent_id="user",
-            role="user",
-            message_type="user_message",
-            phase="request",
-            summary=payload.text[:1000],
-            content={"text": payload.text},
-            mentions=list(decision.mentions),
-            routing_metadata={
-                "source": decision.source,
-                "confidence": decision.confidence,
-                "reason_code": decision.reason_code,
-            },
-            source_id=f"user:{payload.idempotency_key}",
-        )
-        session.add(user_message)
-        await session.flush()
-        new_runs: list[AgentRun] = []
-        queued_entries: list[Any] = []
-        queue = InvocationQueueRepository(session)
-        targets = ("architect",) if decision.requires_execution else decision.agent_ids
-        intent = "execute" if decision.requires_execution else "delegate"
-        if not decision.requires_execution and len(targets) > 1:
-            if len(targets) > 3:
-                raise HTTPException(
-                    status_code=422, detail="parallel collaboration supports at most 3 agents"
-                )
-            turn.collaboration_mode = "parallel"
-            turn.collaboration_phase = "running"
-            turn.synthesize = True
-            parallel_request = await ParallelInvocationService(
-                session,
-                request.app.state.coordinator.agent_registry,
-                request.app.state.coordinator.collaboration_inactivity_seconds,
-            ).create(
-                conversation_id=conversation_id,
-                turn_id=turn.id,
-                source_message_id=user_message.id,
-                targets=targets,
-                question=payload.text,
-                idempotency_key=payload.idempotency_key,
-            )
-            queued_entries = [parallel_request]
-        else:
-            for agent_id in targets:
-                queued_entries.append(
-                    await queue.enqueue(
-                        InvocationRequest(
-                            conversation_id=conversation_id,
-                            turn_id=turn.id,
-                            source_message_id=user_message.id,
-                            target_agent_id=agent_id,
-                            intent=intent,
-                            objective=payload.text,
-                        )
-                    )
-                )
-        conversation.updated_at = datetime.now(UTC)
-        if conversation.title == "新对话":
-            conversation.title = payload.text[:255]
+        message = ConversationMessage(conversation_id=conversation_id, turn_id=turn.id, routing_decision_id=route.id,
+            agent_id="user", role="user", message_type="user_message", phase="request", summary=payload.text[:1000],
+            content={"text": payload.text}, mentions=list(decision.mentions), routing_metadata={"source": decision.source, "confidence": decision.confidence, "reason_code": decision.reason_code, "mode": mode.value}, source_id=source_id)
+        session.add(message); conversation.updated_at = datetime.now(UTC)
+        if conversation.title == "新对话": conversation.title = payload.text[:255]
         await session.commit()
-        if queued_entries:
-            await request.app.state.coordinator.schedule_invocations(conversation_id)
-        return ConversationTurnResponse(
-            turn_id=turn.id,
-            conversation_id=conversation_id,
-            state=turn.status,
-            route_source=decision.source,
-            selected_agents=decision.agent_ids,
-            agent_runs=tuple(
-                AgentRunResponse(
-                    id=run.id, agent_id=run.agent_id, model=run.model, status=run.status
-                )
-                for run in new_runs
-            ),
-        )
-
-    contract = payload.contract
-    assert contract is not None
+        runs = []
+        for agent_id in targets:
+            definition = request.app.state.coordinator.agent_definition(agent_id)
+            run = AgentRun(turn_id=turn.id, agent_id=agent_id, intent=mode.value, phase=mode.value, role=definition.role,
+                prompt_version=definition.prompt_version, schema_version=definition.schema_version, model=definition.model,
+                config_hash=definition.config_hash(), status="queued")
+            runs.append(run); session.add(run)
+        await session.commit()
+        await request.app.state.coordinator.schedule_chat(tuple(run.id for run in runs), payload.text, conversation_id=conversation_id, turn_id=turn.id, mode=mode)
+        return ConversationTurnResponse(turn_id=turn.id, conversation_id=conversation_id, state=turn.status, route_source=decision.source,
+            collaboration_mode=mode, synthesize=mode is CollaborationMode.PARALLEL, selected_agents=tuple(targets),
+            agent_runs=tuple(AgentRunResponse(id=run.id, agent_id=run.agent_id, model=run.model, status=run.status) for run in runs))
+    contract = payload.contract; assert contract is not None
     latest = await _latest_task(session, conversation_id)
-    if latest is not None and latest.state not in _TERMINAL_VALUES:
-        raise HTTPException(status_code=409, detail="conversation_busy")
-    task = Task(
-        id=contract.task_id,
-        conversation_id=conversation_id,
-        trace_id=payload.idempotency_key,
-        contract=contract.model_dump(mode="json"),
-    )
-    await TaskRepository(session).add(task)
-    # Persist the parent task before inserting its first message. The models do not
-    # expose an ORM relationship, so SQLAlchemy cannot infer object-level flush order.
-    await session.flush()
-    session.add(
-        ConversationMessage(
-            task_id=task.id,
-            agent_id="user",
-            role="user",
-            message_type="user_message",
-            phase="request",
-            summary=contract.goal[:1000],
-            content={"text": contract.goal},
-            source_id=source_id,
-        )
-    )
+    if latest is not None and latest.state not in _TERMINAL_VALUES: raise HTTPException(409, "conversation_busy")
+    task = Task(id=contract.task_id, conversation_id=conversation_id, trace_id=payload.idempotency_key, contract=contract.model_dump(mode="json"))
+    await TaskRepository(session).add(task); await session.flush()
+    session.add(ConversationMessage(task_id=task.id, conversation_id=conversation_id, agent_id="user", role="user", message_type="user_message", phase="request", summary=contract.goal[:1000], content={"text": contract.goal}, source_id=source_id))
     conversation.updated_at = datetime.now(UTC)
-    if conversation.title == "新对话":
-        conversation.title = contract.goal[:255]
-    await session.commit()
-    await request.app.state.coordinator.schedule(task.id)
-    return ConversationTurnResponse(
-        task_id=task.id,
-        conversation_id=conversation_id,
-        state=task.state,
-    )
+    if conversation.title == "新对话": conversation.title = contract.goal[:255]
+    await session.commit(); await request.app.state.coordinator.schedule(task.id)
+    return ConversationTurnResponse(task_id=task.id, conversation_id=conversation_id, state=task.state)
+
+
+def _message_payload(message: ConversationMessage) -> dict[str, Any]:
+    return {"id": message.id, "task_id": message.task_id, "conversation_id": message.conversation_id, "turn_id": message.turn_id, "agent_run_id": message.agent_run_id, "routing_decision_id": message.routing_decision_id, "reply_to_message_id": message.reply_to_message_id, "agent_id": message.agent_id, "role": message.role, "message_type": message.message_type, "phase": message.phase, "summary": message.summary, "content": message.content, "mentions": message.mentions, "routing_metadata": message.routing_metadata, "source_id": message.source_id, "created_at": message.created_at}
 
 
 @router.get("/{conversation_id}/messages")
-async def conversation_messages(
-    conversation_id: UUID,
-    session: Session,
-    after: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(ge=1, le=1000)] = 500,
-) -> list[dict[str, Any]]:
-    if await session.get(Conversation, conversation_id) is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    messages = list(
-        await session.scalars(
-            select(ConversationMessage)
-            .outerjoin(Task, Task.id == ConversationMessage.task_id)
-            .where(
-                or_(
-                    ConversationMessage.conversation_id == conversation_id,
-                    Task.conversation_id == conversation_id,
-                ),
-                ConversationMessage.id > after,
-            )
-            .order_by(ConversationMessage.id)
-            .limit(limit)
-        )
-    )
-    return [
-        {
-            "id": message.id,
-            "task_id": message.task_id,
-            "conversation_id": message.conversation_id,
-            "turn_id": message.turn_id,
-            "agent_run_id": message.agent_run_id,
-            "routing_decision_id": message.routing_decision_id,
-            "reply_to_message_id": message.reply_to_message_id,
-            "agent_id": message.agent_id,
-            "role": message.role,
-            "message_type": message.message_type,
-            "phase": message.phase,
-            "summary": message.summary,
-            "content": message.content,
-            "mentions": message.mentions,
-            "routing_metadata": message.routing_metadata,
-            "source_id": message.source_id,
-            "created_at": message.created_at,
-        }
-        for message in messages
-    ]
+async def conversation_messages(conversation_id: UUID, session: Session, after: Annotated[int, Query(ge=0)] = 0,
+                                limit: Annotated[int, Query(ge=1, le=1000)] = 500) -> list[dict[str, Any]]:
+    if await session.get(Conversation, conversation_id) is None: raise HTTPException(404, "conversation not found")
+    rows = list(await session.scalars(select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id, ConversationMessage.id > after).order_by(ConversationMessage.id).limit(limit)))
+    return [_message_payload(row) for row in rows]
 
 
 @router.get("/{conversation_id}/stream")
-async def stream_conversation(
-    conversation_id: UUID,
-    request: Request,
-    after: Annotated[int, Query(ge=0)] = 0,
-) -> StreamingResponse:
+async def stream_conversation(conversation_id: UUID, request: Request, after: Annotated[int, Query(ge=0)] = 0) -> StreamingResponse:
     async def events() -> AsyncIterator[str]:
         cursor = after
         while not await request.is_disconnected():
-            async with request.app.state.database.session_factory() as stream_session:
-                exists = await stream_session.get(Conversation, conversation_id)
-                if exists is None:
-                    yield 'event: error\ndata: {"detail":"conversation not found"}\n\n'
-                    return
-                rows = list(
-                    await stream_session.scalars(
-                        select(ConversationMessage)
-                        .outerjoin(Task, Task.id == ConversationMessage.task_id)
-                        .where(
-                            or_(
-                                ConversationMessage.conversation_id == conversation_id,
-                                Task.conversation_id == conversation_id,
-                            ),
-                            ConversationMessage.id > cursor,
-                        )
-                        .order_by(ConversationMessage.id)
-                    )
-                )
-            for message in rows:
-                cursor = message.id
-                payload = {
-                    "id": message.id,
-                    "task_id": str(message.task_id) if message.task_id else None,
-                    "conversation_id": str(message.conversation_id)
-                    if message.conversation_id
-                    else None,
-                    "turn_id": str(message.turn_id) if message.turn_id else None,
-                    "agent_run_id": str(message.agent_run_id) if message.agent_run_id else None,
-                    "routing_decision_id": (
-                        str(message.routing_decision_id) if message.routing_decision_id else None
-                    ),
-                    "reply_to_message_id": message.reply_to_message_id,
-                    "agent_id": message.agent_id,
-                    "role": message.role,
-                    "message_type": message.message_type,
-                    "phase": message.phase,
-                    "summary": message.summary,
-                    "content": message.content,
-                    "mentions": message.mentions,
-                    "routing_metadata": message.routing_metadata,
-                    "source_id": message.source_id,
-                    "created_at": message.created_at.isoformat(),
-                }
-                yield f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-            if not rows:
-                yield ": keepalive\n\n"
-            await asyncio.sleep(1)
-
+            async with request.app.state.database.session_factory() as session:
+                if await session.get(Conversation, conversation_id) is None:
+                    yield 'event: error\ndata: {"detail":"conversation not found"}\n\n'; return
+                rows = list(await session.scalars(select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id, ConversationMessage.id > cursor).order_by(ConversationMessage.id)))
+            for row in rows:
+                cursor = row.id
+                yield f"event: message\ndata: {json.dumps(_message_payload(row), default=str, ensure_ascii=False)}\n\n"
+            if not rows: yield ": keepalive\n\n"
+            await asyncio.sleep(request.app.state.settings.sse_poll_interval_seconds)
     return StreamingResponse(events(), media_type="text/event-stream")

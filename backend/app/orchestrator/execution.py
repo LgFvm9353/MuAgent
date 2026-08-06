@@ -16,7 +16,6 @@ from app.logging import logger
 from app.memory.consolidation import MemoryConsolidationService
 from app.models import (
     AgentRun,
-    ConversationMessage,
     EvidenceRecordModel,
     ExecutionPlanRecord,
     ExecutionStepRecord,
@@ -50,6 +49,7 @@ class ExecutionService:
         executor: ToolExecutor,
         workspace_root: Path,
         settings: Settings,
+        conversation_store: object | None = None,
     ) -> None:
         self._sessions = sessions
         self._runtime = runtime
@@ -57,6 +57,7 @@ class ExecutionService:
         self._executor = executor
         self._workspace_root = workspace_root
         self._settings = settings
+        self._conversation_store = conversation_store
 
     async def execute(self, task_id: UUID) -> None:
         contract, plan = await self._load(task_id)
@@ -217,7 +218,9 @@ class ExecutionService:
                 TaskState.NEEDS_REVIEW,
                 TaskState.BUDGET_EXCEEDED,
             }:
-                await FinalSummaryService(session).add(transitioned, reason=reason)
+                await FinalSummaryService(session, self._conversation_store).add(
+                    transitioned, reason=reason
+                )
             await session.commit()
         if self._settings.memory_enabled and self._settings.memory_auto_consolidation_enabled:
             await self._consolidate_memory(task_id, auto_activate=target is TaskState.SUCCEEDED)
@@ -359,8 +362,9 @@ class ExecutionService:
                     step_record = await session.get(ExecutionStepRecord, failed_call.step_id)
                     if step_record is not None:
                         step_record.status = "failed"
-                    session.add(
-                        ConversationMessage(
+                    if False:  # transcript is persisted by the local JSON projection
+                        session.add(
+                        dict(  # unreachable legacy SQL transcript projection
                             task_id=task_id,
                             agent_id="executor",
                             role="tool",
@@ -414,8 +418,9 @@ class ExecutionService:
                     sha256=evidence.sha256,
                 )
             )
-            session.add(
-                ConversationMessage(
+            if False:  # transcript is persisted by the local JSON projection
+                session.add(
+                dict(  # unreachable legacy SQL transcript projection
                     task_id=task_id,
                     agent_id="executor",
                     role="tool",

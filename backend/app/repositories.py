@@ -137,22 +137,13 @@ class TaskRepository:
         )
         return list(result)
 
-    async def messages(
-        self,
-        task_id: UUID,
-        *,
-        after: int = 0,
-        limit: int = 200,
-    ) -> list[ConversationMessage]:
+    async def messages(self, task_id: UUID, *, after: int = 0, limit: int = 200) -> list[ConversationMessage]:
         await self.get(task_id)
         result = await self._session.scalars(
-            select(ConversationMessage)
-            .where(
+            select(ConversationMessage).where(
                 ConversationMessage.task_id == task_id,
                 ConversationMessage.id > after,
-            )
-            .order_by(ConversationMessage.id)
-            .limit(limit)
+            ).order_by(ConversationMessage.id).limit(limit)
         )
         return list(result)
 

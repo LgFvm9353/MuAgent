@@ -4,14 +4,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CollaborationMode(StrEnum):
+    SINGLE = "single"
     PARALLEL = "parallel"
-    SERIAL = "serial"
 
 
 class CollaborationPhase(StrEnum):
     ROUTING = "routing"
+    SINGLE = "single"
     PARALLEL = "parallel"
-    SERIAL = "serial"
     SYNTHESIS = "synthesis"
     WAITING_CONFIRMATION = "waiting_confirmation"
     COMPLETED = "completed"
@@ -72,8 +72,8 @@ class CollaborationPolicy(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode_boundaries(self) -> "CollaborationPolicy":
-        if self.mode is CollaborationMode.SERIAL and self.max_agents != 1:
-            raise ValueError("serial mode must use exactly one initial agent")
+        if self.mode is CollaborationMode.SINGLE and self.max_agents != 1:
+            raise ValueError("single mode must use exactly one agent")
         if self.max_tool_calls_per_agent > self.max_tool_calls_per_turn:
             raise ValueError("per-agent tool budget must not exceed turn tool budget")
         return self

@@ -133,5 +133,8 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
 
 
 def ensure_storage_roots(settings: Settings) -> None:
-    for root in (settings.workspace_root, settings.artifacts_root):
+    for root in (
+        settings.workspace_root,
+        settings.artifacts_root,
+    ):
         Path(root).mkdir(parents=True, exist_ok=True)

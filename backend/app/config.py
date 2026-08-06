@@ -60,9 +60,9 @@ class Settings(BaseSettings):
         "list_workspace_files,read_workspace_file,create_workspace_file,"
         "modify_workspace_file,run_allowlisted_check"
     )
-    collaboration_default_mode: Literal["parallel", "serial"] = "parallel"
+    collaboration_default_mode: Literal["single", "parallel"] = "single"
     collaboration_default_synthesize: bool = False
-    collaboration_max_agents: int = Field(default=3, ge=1, le=3)
+    collaboration_max_agents: int = Field(default=3, ge=2, le=3)
     collaboration_max_tool_rounds_per_agent: int = Field(default=6, ge=0, le=20)
     collaboration_max_tool_calls_per_agent: int = Field(default=10, ge=0, le=50)
     collaboration_max_tool_calls_per_turn: int = Field(default=20, ge=0, le=100)
@@ -141,11 +141,9 @@ class Settings(BaseSettings):
         return CollaborationPolicy(
             mode=selected_mode,
             synthesize=self.collaboration_default_synthesize if synthesize is None else synthesize,
-            max_agents=(
-                self.collaboration_max_agents
-                if selected_mode is CollaborationMode.PARALLEL
-                else 1
-            ),
+            max_agents=self.collaboration_max_agents
+            if selected_mode is CollaborationMode.PARALLEL
+            else 1,
             max_tool_rounds_per_agent=self.collaboration_max_tool_rounds_per_agent,
             max_tool_calls_per_agent=self.collaboration_max_tool_calls_per_agent,
             max_tool_calls_per_turn=self.collaboration_max_tool_calls_per_turn,

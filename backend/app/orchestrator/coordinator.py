@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import anthropic
@@ -15,6 +16,7 @@ from app.agents.routing import AgentRouter, RouteDecision
 from app.agents.runtime import AgentRuntime, StructuredGateway
 from app.config import Settings
 from app.contracts.agents import ChatAgentReply
+from app.contracts.collaboration import CollaborationMode
 from app.contracts.task import TaskContract
 from app.errors import safe_error_summary
 from app.harness.context import AgentContextBuilder
@@ -22,14 +24,13 @@ from app.harness.model_gateway import ModelGateway
 from app.harness.openai_gateway import OpenAIModelGateway
 from app.harness.registry import AgentDefinition, AgentRegistry
 from app.logging import logger
-from app.models import AgentRun, ConversationMessage
+from app.models import AgentRun
 from app.orchestrator.execution import ExecutionService
-from app.orchestrator.queue_processor import QueueProcessor
 from app.orchestrator.scheduler import SpecialistQuorumError
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskNotFoundError, TaskRepository
-from app.services.conversation import ConversationService
+from app.services.conversation import ConversationService, DatabaseConversationStore
 from app.services.final_summary import FinalSummaryService
 from app.skills.registry import SkillRegistry
 from app.tools.agent_binding import bind_agent_mcp_tools
@@ -51,12 +52,14 @@ class Coordinator:
         prompts_root: Path,
         tool_registry: ToolRegistry | None = None,
         skill_registry: SkillRegistry | None = None,
+        conversation_store: object | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = sessions
         self._prompts_root = prompts_root
         self._chat_tools = tool_registry
         self._skills = skill_registry
+        self._conversation_store = DatabaseConversationStore(sessions)
         self._active: dict[UUID, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         self._client: openai.AsyncOpenAI | anthropic.AsyncAnthropic
@@ -89,15 +92,6 @@ class Coordinator:
             )
         self._agents = build_agent_registry(settings, prompts_root)
         self._router = AgentRouter(self._agents, settings.max_auto_routed_agents)
-        self._queue_processor = QueueProcessor(
-            sessions,
-            self._gateway,
-            self._agents,
-            settings,
-            self.schedule,
-            tool_registry,
-            lease_seconds=max(settings.model_timeout_seconds * 2, 120),
-        )
 
     def route_chat(self, text: str) -> RouteDecision:
         return self._router.route(text)
@@ -127,41 +121,78 @@ class Coordinator:
 
             operation.add_done_callback(remove)
 
-    async def schedule_invocations(self, conversation_id: UUID) -> None:
+    async def schedule_chat(
+        self,
+        run_ids: tuple[UUID, ...],
+        user_text: str,
+        *,
+        conversation_id: UUID,
+        turn_id: UUID,
+        mode: CollaborationMode,
+    ) -> None:
+        if mode not in {CollaborationMode.SINGLE, CollaborationMode.PARALLEL}:
+            raise ValueError(f"unsupported collaboration mode: {mode}")
+        operation = asyncio.create_task(
+            self._run_subagents(
+                run_ids,
+                user_text,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                mode=mode,
+            ),
+            name=f"subagent-run:{turn_id}",
+        )
         async with self._lock:
-            current = self._active.get(conversation_id)
-            if current is not None and not current.done():
-                return
-            operation = asyncio.create_task(
-                self._queue_processor.drain(), name=f"conversation-queue:{conversation_id}"
+            self._active[turn_id] = operation
+
+        def remove(finished: asyncio.Task[None]) -> None:
+            if self._active.get(turn_id) is finished:
+                self._active.pop(turn_id, None)
+
+        operation.add_done_callback(remove)
+
+    async def _run_subagents(
+        self,
+        run_ids: tuple[UUID, ...],
+        user_text: str,
+        *,
+        conversation_id: UUID,
+        turn_id: UUID,
+        mode: CollaborationMode,
+    ) -> None:
+        # Each child receives the same immutable request snapshot.  Parallel
+        # mode never chains one child into another; the parent aggregates the
+        # completed child outputs after the fan-out.
+        operation = [
+            self._run_chat_agent(
+                run_id,
+                user_text,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                mode=mode,
             )
-            self._active[conversation_id] = operation
+            for run_id in run_ids
+        ]
+        results = await asyncio.gather(*operation, return_exceptions=True)
+        if mode is CollaborationMode.PARALLEL and len(run_ids) > 1:
+            outputs = [item for item in results if isinstance(item, dict)]
+            if outputs:
+                await self._publish_parallel_result(
+                    conversation_id,
+                    turn_id,
+                    user_text,
+                    outputs,
+                )
 
-            def remove(finished: asyncio.Task[None]) -> None:
-                if self._active.get(conversation_id) is finished:
-                    self._active.pop(conversation_id, None)
-
-            operation.add_done_callback(remove)
-
-    async def resume_invocations(self) -> None:
-        await self._queue_processor.resume_timeouts()
-        await self._queue_processor.drain()
-
-    async def schedule_chat(self, run_ids: tuple[UUID, ...], user_text: str) -> None:
-        for run_id in run_ids:
-            operation = asyncio.create_task(
-                self._run_chat_agent(run_id, user_text), name=f"agent-run:{run_id}"
-            )
-            async with self._lock:
-                self._active[run_id] = operation
-
-            def remove(finished: asyncio.Task[None], key: UUID = run_id) -> None:
-                if self._active.get(key) is finished:
-                    self._active.pop(key, None)
-
-            operation.add_done_callback(remove)
-
-    async def _run_chat_agent(self, run_id: UUID, user_text: str) -> None:
+    async def _run_chat_agent(
+        self,
+        run_id: UUID,
+        user_text: str,
+        *,
+        conversation_id: UUID,
+        turn_id: UUID,
+        mode: CollaborationMode,
+    ) -> dict[str, Any] | None:
         async with self._sessions() as session:
             run = await session.get(AgentRun, run_id)
             if run is None:
@@ -170,11 +201,24 @@ class Coordinator:
             run.started_at = datetime.now(UTC)
             await session.commit()
             agent_id = run.agent_id
-            turn_id = run.turn_id
+            turn_id = run.turn_id or turn_id
 
         try:
             definition = self._agents.get(agent_id)
-            context = AgentContextBuilder().chat(agent_id=agent_id, user_text=user_text)
+            history = await ConversationService(self._sessions).relevant_history(
+                conversation_id, turn_id
+            )
+            context = AgentContextBuilder().chat(
+                agent_id=agent_id,
+                user_text=user_text,
+                relevant_history=history,
+            )
+            context["subagent"] = {
+                "run_id": str(run_id),
+                "parent_turn_id": str(turn_id),
+                "context_mode": "fresh",
+                "collaboration_mode": mode.value,
+            }
             binding = bind_agent_mcp_tools(
                 self._chat_tools,
                 definition,
@@ -215,21 +259,25 @@ class Coordinator:
                     "tool_calls": binding.executor.calls if binding is not None else 0,
                 }
                 run.completed_at = datetime.now(UTC)
-                session.add(
-                    ConversationMessage(
-                        conversation_id=await self._conversation_id_for_turn(session, turn_id),
-                        turn_id=turn_id,
-                        agent_run_id=run_id,
-                        agent_id=agent_id,
-                        role="agent",
-                        message_type="agent_message",
-                        phase="discussion",
-                        summary=reply.text[:1000],
-                        content={"text": reply.text},
-                        source_id=f"agent-run:{run_id}",
-                    )
-                )
                 await session.commit()
+            await self._conversation_store.append(
+                conversation_id,
+                turn_id=turn_id,
+                agent_run_id=run_id,
+                agent_id=agent_id,
+                role="agent",
+                message_type="agent_message",
+                phase=mode.value,
+                summary=reply.text,
+                content={"text": reply.text, "subagent_run_id": str(run_id)},
+                source_id=f"agent-run:{run_id}",
+            )
+            return {
+                "agent_id": agent_id,
+                "run_id": str(run_id),
+                "text": reply.text,
+                "status": "completed",
+            }
         except Exception as error:
             error_code, _ = safe_error_summary(error)
             async with self._sessions() as session:
@@ -239,6 +287,46 @@ class Coordinator:
                     run.error_type = error_code
                     run.completed_at = datetime.now(UTC)
                     await session.commit()
+            await self._conversation_store.append(
+                conversation_id,
+                turn_id=turn_id,
+                agent_run_id=run_id,
+                agent_id=agent_id,
+                role="agent",
+                message_type="agent_error",
+                phase=mode.value,
+                summary=f"{agent_id} 执行失败",
+                content={"error_type": error_code, "subagent_run_id": str(run_id)},
+                source_id=f"agent-run-error:{run_id}",
+            )
+            return {"agent_id": agent_id, "run_id": str(run_id), "status": "failed"}
+
+    async def _publish_parallel_result(
+        self,
+        conversation_id: UUID,
+        turn_id: UUID,
+        user_text: str,
+        outputs: list[dict[str, Any]],
+    ) -> None:
+        text = "\n\n".join(
+            f"### {item.get('agent_id', 'agent')}\n{item.get('text', '(无结果)')}"
+            for item in outputs
+        )
+        await self._conversation_store.append(
+            conversation_id,
+            turn_id=turn_id,
+            agent_id="parent",
+            role="agent",
+            message_type="parallel_result",
+            phase="synthesis",
+            summary=f"并行协作完成：{user_text[:120]}",
+            content={
+                "text": text,
+                "results": outputs,
+                "mode": CollaborationMode.PARALLEL.value,
+            },
+            source_id=f"parallel-result:{turn_id}",
+        )
 
     @staticmethod
     async def _conversation_id_for_turn(session: AsyncSession, turn_id: UUID | None) -> UUID | None:
@@ -262,7 +350,6 @@ class Coordinator:
                 operation.cancel()
         if operations:
             await asyncio.gather(*operations, return_exceptions=True)
-        await self._queue_processor.close()
         await self._client.close()
 
     async def _run(self, task_id: UUID) -> None:
@@ -299,6 +386,7 @@ class Coordinator:
                 ToolExecutor(tools),
                 workspace_root,
                 self._settings,
+                self._conversation_store,
             )
             state = await self._state(task_id)
             max_transitions = 3 + 2 * contract.budget.max_revisions
@@ -357,16 +445,7 @@ class Coordinator:
                 details={"error_code": error_code, "message": message},
             )
         finally:
-            try:
-                async with self._sessions() as session:
-                    from app.models import Task
-
-                    task = await session.get(Task, task_id)
-                    conversation_id = task.conversation_id if task is not None else None
-                if conversation_id is not None:
-                    await self._queue_processor.drain()
-            finally:
-                clear_contextvars()
+            clear_contextvars()
 
     async def _contract(self, task_id: UUID) -> TaskContract:
         async with self._sessions() as session:
@@ -418,6 +497,7 @@ class Coordinator:
             except ValueError:
                 await session.rollback()
                 return
+            terminal_message: tuple[UUID, str] | None = None
             if target in {
                 TaskState.NEEDS_REVIEW,
                 TaskState.FAILED,
@@ -425,22 +505,26 @@ class Coordinator:
                 TaskState.BUDGET_EXCEEDED,
             }:
                 message = (details or {}).get("message", reason)
-                session.add(
-                    ConversationMessage(
-                        task_id=task_id,
-                        agent_id="system",
-                        role="system",
-                        message_type="terminal_result",
-                        phase="completion",
-                        summary=message[:1000],
-                        content={
-                            "state": target.value,
-                            "reason": reason,
-                            "details": details or {},
-                            "action": "请根据错误详情调整任务输入后重试。",
-                        },
-                        source_id=f"terminal-result:{target.value}:{task.version + 1}",
-                    )
+                terminal_message = (task.conversation_id, message)
+                await FinalSummaryService(session, self._conversation_store).add(
+                    transitioned, reason=reason
                 )
-                await FinalSummaryService(session).add(transitioned, reason=reason)
             await session.commit()
+        if terminal_message is not None:
+            conversation_id, message = terminal_message
+            await self._conversation_store.append(
+                conversation_id,
+                task_id=task_id,
+                agent_id="system",
+                role="system",
+                message_type="terminal_result",
+                phase="completion",
+                summary=message,
+                content={
+                    "state": target.value,
+                    "reason": reason,
+                    "details": details or {},
+                    "action": "请根据错误详情调整任务输入后重试。",
+                },
+                source_id=f"terminal-result:{target.value}:{task_id}",
+            )

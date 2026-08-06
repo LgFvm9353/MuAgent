@@ -70,9 +70,12 @@ class AgentRuntime:
     async def reviewer(
         self,
         task: TaskContract,
-        architecture: AgentProposal,
+        architecture: AgentProposal | None = None,
     ) -> ReviewFeedback:
-        context = self._context.reviewer(task, architecture.model_dump(mode="json"))
+        context = self._context.reviewer(
+            task,
+            architecture.model_dump(mode="json") if architecture is not None else None,
+        )
         return cast(
             ReviewFeedback,
             await self._call("reviewer", "review", context, ReviewFeedback),
@@ -81,11 +84,11 @@ class AgentRuntime:
     async def designer(
         self,
         task: TaskContract,
-        architecture: AgentProposal,
+        architecture: AgentProposal | None = None,
     ) -> DesignFeedback:
         context = self._context.designer(
             task,
-            architecture.model_dump(mode="json"),
+            architecture.model_dump(mode="json") if architecture is not None else None,
         )
         return cast(
             DesignFeedback,

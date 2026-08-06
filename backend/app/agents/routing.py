@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.harness.registry import AgentRegistry
+from app.contracts.collaboration import CollaborationMode
 
 RouteSource = Literal["explicit", "rule", "fallback"]
 _MENTION = re.compile(r"(?<![\w@])@([\w\-一-鿿]+)", re.UNICODE)
@@ -19,6 +20,7 @@ _SIDE_EFFECT_PATTERNS = tuple(
 @dataclass(frozen=True, slots=True)
 class RouteDecision:
     agent_ids: tuple[str, ...]
+    mode: CollaborationMode
     source: RouteSource
     confidence: float
     reason_code: str
@@ -38,6 +40,7 @@ class AgentRouter:
         if mentions:
             return RouteDecision(
                 agent_ids=mentions,
+                mode=CollaborationMode.PARALLEL if len(mentions) > 1 else CollaborationMode.SINGLE,
                 source="explicit",
                 confidence=1.0,
                 reason_code="explicit_mentions",
@@ -59,6 +62,7 @@ class AgentRouter:
             best_score = scored[0][0]
             return RouteDecision(
                 agent_ids=selected,
+                mode=CollaborationMode.PARALLEL if len(selected) > 1 else CollaborationMode.SINGLE,
                 source="rule",
                 confidence=min(0.95, 0.65 + best_score * 0.1),
                 reason_code="keyword_capability_match",
@@ -69,6 +73,7 @@ class AgentRouter:
         fallback = self._registry.get("architect").agent_id
         return RouteDecision(
             agent_ids=(fallback,),
+            mode=CollaborationMode.SINGLE,
             source="fallback",
             confidence=0.4,
             reason_code="default_architect",
