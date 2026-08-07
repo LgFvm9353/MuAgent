@@ -30,7 +30,6 @@ from app.config_defaults import (
     DEFAULT_CONTEXT_UNKNOWN_MODEL_WINDOW,
     DEFAULT_CORS_ORIGINS,
     DEFAULT_LOG_LEVEL,
-    DEFAULT_MAX_AUTO_ROUTED_AGENTS,
     DEFAULT_MCP_CLOSE_TIMEOUT_SECONDS,
     DEFAULT_MCP_CONFIG_PATH,
     DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS,
@@ -84,7 +83,6 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     openai_model: str | None = None
     router_model: str | None = None
-    max_auto_routed_agents: int = Field(default=DEFAULT_MAX_AUTO_ROUTED_AGENTS, ge=1, le=3)
     workspace_root: Path = Path(DEFAULT_WORKSPACE_ROOT)
     artifacts_root: Path = Path(DEFAULT_ARTIFACTS_ROOT)
     model_concurrency: int = Field(default=DEFAULT_MODEL_CONCURRENCY, ge=1, le=32)

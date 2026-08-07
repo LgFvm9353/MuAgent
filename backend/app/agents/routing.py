@@ -5,7 +5,7 @@ from typing import Literal
 from app.contracts.collaboration import CollaborationMode
 from app.harness.registry import AgentRegistry
 
-RouteSource = Literal["explicit", "rule", "fallback"]
+RouteSource = Literal["explicit", "fallback"]
 _MENTION = re.compile(r"(?<![\w@])@([\w-]+)", re.UNICODE)
 _SIDE_EFFECT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
@@ -29,11 +29,8 @@ class RouteDecision:
 
 
 class AgentRouter:
-    def __init__(self, registry: AgentRegistry, max_auto_agents: int = 2) -> None:
-        if max_auto_agents < 1:
-            raise ValueError("max_auto_agents must be positive")
+    def __init__(self, registry: AgentRegistry) -> None:
         self._registry = registry
-        self._max_auto_agents = max_auto_agents
 
     def route(self, text: str) -> RouteDecision:
         mentions = self.parse_mentions(text)
@@ -48,33 +45,12 @@ class AgentRouter:
                 requires_execution=self.requires_execution(text),
             )
 
-        normalized = text.casefold()
-        scored: list[tuple[int, int, str]] = []
-        for order, definition in enumerate(self._registry.all()):
-            score = sum(
-                normalized.count(keyword.casefold()) for keyword in definition.routing_keywords
-            )
-            if score:
-                scored.append((score, -order, definition.agent_id))
-        scored.sort(reverse=True)
-        selected = tuple(item[2] for item in scored[: self._max_auto_agents])
-        if selected:
-            return RouteDecision(
-                agent_ids=selected,
-                mode=CollaborationMode.PARALLEL if len(selected) > 1 else CollaborationMode.SINGLE,
-                source="rule",
-                confidence=min(0.95, 0.65 + scored[0][0] * 0.1),
-                reason_code="keyword_capability_match",
-                mentions=(),
-                requires_execution=self.requires_execution(text),
-            )
-
         return RouteDecision(
             agent_ids=(self._registry.get("delegate").agent_id,),
             mode=CollaborationMode.SINGLE,
             source="fallback",
             confidence=0.4,
-            reason_code="default_delegate",
+            reason_code="default_delegate_no_explicit_target",
             mentions=(),
             requires_execution=self.requires_execution(text),
         )

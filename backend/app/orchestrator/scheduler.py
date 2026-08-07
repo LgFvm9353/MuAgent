@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import uuid4
 
+from app.agents.retry import is_retryable_agent_error, retry_delay_seconds
 from app.contracts.agents import AgentBrief, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
@@ -268,20 +269,52 @@ class Scheduler:
         task: TaskContract,
         role_context: dict[str, Any],
     ) -> _SpecialistResult:
-        await self._publish(agent_id, "specialist", f"{agent_id} started", {"status": "running"})
-        try:
-            value = await self._runtime.specialist(agent_id, task, role_context)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             await self._publish(
-                agent_id, "specialist_failed", f"{agent_id} failed", {"status": "failed"}
+                agent_id,
+                "specialist",
+                f"{agent_id} started (attempt {attempt}/{max_attempts})",
+                {"status": "running", "attempt": attempt, "max_attempts": max_attempts},
             )
-            return _SpecialistResult(agent_id, None, f"{agent_id}: {error}")
-        await self._publish(
-            agent_id, "specialist_completed", f"{agent_id} completed", {"status": "completed"}
-        )
-        return _SpecialistResult(agent_id, value)
+            try:
+                value = await self._runtime.specialist(
+                    agent_id,
+                    task,
+                    {**role_context, "attempt": attempt, "max_attempts": max_attempts},
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                if attempt < max_attempts and is_retryable_agent_error(error):
+                    await self._publish(
+                        agent_id,
+                        "specialist_retrying",
+                        f"{agent_id} retry scheduled",
+                        {"status": "retrying", "attempt": attempt, "error": str(error)},
+                    )
+                    await asyncio.sleep(retry_delay_seconds(attempt))
+                    continue
+                await self._publish(
+                    agent_id,
+                    "specialist_failed",
+                    f"{agent_id} failed after {attempt} attempt(s)",
+                    {
+                        "status": "failed",
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "error": str(error),
+                    },
+                )
+                return _SpecialistResult(agent_id, None, f"{agent_id}: {error}")
+            await self._publish(
+                agent_id,
+                "specialist_completed",
+                f"{agent_id} completed",
+                {"status": "completed", "attempt": attempt},
+            )
+            return _SpecialistResult(agent_id, value)
+        raise AssertionError("specialist retry loop exited without a result")
 
     async def _publish(
         self, agent_id: str, phase: str, summary: str, output: dict[str, Any]
