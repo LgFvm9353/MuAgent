@@ -104,3 +104,17 @@ class ToolRegistry:
             if (definition := self.get(name)).source is ToolSource.MCP
             and risk_order[definition.risk] <= limit
         )
+
+    def model_tools(
+        self,
+        allowed: frozenset[str],
+        *,
+        maximum_risk: RiskLevel = RiskLevel.LOW,
+    ) -> tuple[ToolDefinition[Any, Any], ...]:
+        risk_order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
+        limit = risk_order[maximum_risk]
+        return tuple(
+            definition
+            for name in sorted(allowed & self.names())
+            if risk_order[(definition := self.get(name)).risk] <= limit
+        )

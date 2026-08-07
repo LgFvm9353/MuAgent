@@ -59,6 +59,7 @@ from app.config_defaults import (
 from app.contracts.collaboration import ActivityTimeouts, CollaborationMode, CollaborationPolicy
 
 AgentId = Literal[
+    "supervisor",
     "scout",
     "researcher",
     "planner",

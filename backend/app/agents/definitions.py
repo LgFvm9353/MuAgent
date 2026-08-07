@@ -10,6 +10,7 @@ from app.harness.registry import AgentDefinition, AgentRegistry
 
 def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistry:
     docs_tools = frozenset({"mcp.context7.resolve-library-id", "mcp.context7.query-docs"})
+    delegation_tools = frozenset({"subagent"})
     workspace_tools = settings.mention_execution_tool_set
 
     def definition(
@@ -53,6 +54,18 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
 
     return AgentRegistry(
         (
+            definition(
+                "supervisor",
+                "root agent orchestration and final synthesis",
+                display_name="Supervisor",
+                description=(
+                    "Own the user request, delegate bounded work, and synthesize the final answer."
+                ),
+                capabilities=frozenset({"orchestration", "delegation", "synthesis"}),
+                mention_aliases=("supervisor",),
+                routing_keywords=(),
+                allowed_tools=workspace_tools | docs_tools | delegation_tools,
+            ),
             definition(
                 "scout",
                 "fast local codebase reconnaissance",

@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,13 +16,19 @@ from app.database import Database
 from app.logging import configure_logging
 from app.mcp.config import load_mcp_config
 from app.mcp.manager import McpManager
-from app.mcp.registry import register_mcp_tools
 from app.mcp.sdk_connector import SdkMcpConnector
 from app.memory.service import MemoryService
 from app.orchestrator.coordinator import Coordinator
 from app.orchestrator.recovery import RecoveryService
 from app.skills.registry import SkillRegistry
 from app.tools.factory import build_tool_registry, ensure_storage_roots
+from app.tools.providers import McpToolProvider
+from app.tools.subagent import (
+    AttachLoop,
+    ContextMode,
+    SubagentRunManager,
+    register_subagent_tool,
+)
 
 PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -36,16 +43,36 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.database = Database(settings.database_url)
     application.state.memory_service = MemoryService(settings, BACKEND_ROOT.parent)
     application.state.tool_registry = build_tool_registry(settings, settings.workspace_root)
+
+    async def run_subagent(
+        agent: str,
+        task: str,
+        context: ContextMode,
+        attach_loop: AttachLoop,
+    ) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await application.state.coordinator.run_subagent(
+                agent, task, context, attach_loop
+            ),
+        )
+
+    application.state.subagent_manager = SubagentRunManager(run_subagent)
+    register_subagent_tool(
+        application.state.tool_registry,
+        application.state.subagent_manager,
+    )
     mcp_config = load_mcp_config(BACKEND_ROOT / settings.mcp_config_path)
     application.state.mcp_manager = McpManager(
         mcp_config,
         SdkMcpConnector(mcp_config.servers),
     )
-    await register_mcp_tools(
+    application.state.mcp_tool_provider = McpToolProvider(
         application.state.tool_registry,
         application.state.mcp_manager,
         mcp_config,
     )
+    await application.state.mcp_tool_provider.discover()
     application.state.skill_registry = SkillRegistry.load(
         BACKEND_ROOT / settings.skills_root,
         application.state.tool_registry,
@@ -63,6 +90,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await application.state.subagent_manager.close()
         await application.state.coordinator.close()
         await application.state.mcp_manager.close(
             timeout_seconds=settings.mcp_close_timeout_seconds

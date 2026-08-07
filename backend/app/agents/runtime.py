@@ -5,17 +5,20 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from app.agent_loop import ModelTurnProvider
 from app.contracts.agents import AgentBrief, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.context import ContextBuilder
-from app.harness.model_gateway import ModelResult, ModelToolCallPort
+from app.harness.model_gateway import ModelResult
 from app.harness.registry import AgentRegistry
 from app.orchestrator.scheduler import AgentInvocation
 from app.tools.registry import ToolRegistry
 
 
 class StructuredGateway(Protocol):
+    def model_turn_provider(self) -> ModelTurnProvider: ...
+
     async def structured(
         self,
         *,
@@ -23,19 +26,6 @@ class StructuredGateway(Protocol):
         system: str,
         user_content: str,
         output_model: type[BaseModel],
-        max_tokens: int = 16_000,
-        effort: str = "high",
-    ) -> ModelResult: ...
-    async def structured_with_tools(
-        self,
-        *,
-        model: str,
-        system: str,
-        user_content: str,
-        output_model: type[BaseModel],
-        tools: tuple[dict[str, Any], ...],
-        executor: ModelToolCallPort,
-        max_tool_rounds: int = 6,
         max_tokens: int = 16_000,
         effort: str = "high",
     ) -> ModelResult: ...

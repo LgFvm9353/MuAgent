@@ -12,8 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import database_session
 from app.contracts.collaboration import CollaborationMode
-from app.contracts.conversation import AgentRunResponse, ConversationCreate, ConversationResponse, ConversationTurnCreate, ConversationTurnResponse
-from app.models import AgentRun, Conversation, ConversationMessage, ConversationTurn, RoutingDecision, Task
+from app.contracts.conversation import (
+    AgentRunResponse,
+    ConversationCreate,
+    ConversationResponse,
+    ConversationTurnCreate,
+    ConversationTurnResponse,
+)
+from app.models import (
+    AgentRun,
+    Conversation,
+    ConversationMessage,
+    ConversationTurn,
+    RoutingDecision,
+    Task,
+)
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskRepository
 
@@ -67,14 +80,15 @@ async def create_turn(conversation_id: UUID, payload: ConversationTurnCreate, se
     source_id = f"user:{payload.idempotency_key}"
     if payload.text is not None:
         decision = request.app.state.coordinator.route_chat(payload.text)
-        mode = decision.mode
-        targets = decision.agent_ids[:1] if mode is CollaborationMode.SINGLE else decision.agent_ids
+        mode = CollaborationMode.SINGLE
+        recommended_agents = decision.agent_ids
+        targets = ("supervisor",)
         if not targets: raise HTTPException(422, "no enabled agent matched the request")
         turn = ConversationTurn(conversation_id=conversation_id, idempotency_key=payload.idempotency_key,
             status="running", collaboration_mode=mode.value, collaboration_phase=mode.value,
-            synthesize=mode is CollaborationMode.PARALLEL, requires_execution=decision.requires_execution)
+            synthesize=False, requires_execution=decision.requires_execution)
         session.add(turn); await session.flush()
-        route = RoutingDecision(turn_id=turn.id, source=decision.source, selected_agents=list(targets), confidence=decision.confidence, reason_code=decision.reason_code, mentions=list(decision.mentions))
+        route = RoutingDecision(turn_id=turn.id, source=decision.source, selected_agents=list(recommended_agents), confidence=decision.confidence, reason_code=decision.reason_code, mentions=list(decision.mentions))
         session.add(route)
         message = ConversationMessage(conversation_id=conversation_id, turn_id=turn.id, routing_decision_id=route.id,
             agent_id="user", role="user", message_type="user_message", phase="request", summary=payload.text[:1000],
@@ -87,12 +101,12 @@ async def create_turn(conversation_id: UUID, payload: ConversationTurnCreate, se
             definition = request.app.state.coordinator.agent_definition(agent_id)
             run = AgentRun(turn_id=turn.id, agent_id=agent_id, intent=mode.value, phase=mode.value, role=definition.role,
                 prompt_version=definition.prompt_version, schema_version=definition.schema_version, model=definition.model,
-                config_hash=definition.config_hash(), status="queued")
+                config_hash=definition.config_hash(), status="queued", skill_id=payload.skill_id)
             runs.append(run); session.add(run)
         await session.commit()
-        await request.app.state.coordinator.schedule_chat(tuple(run.id for run in runs), payload.text, conversation_id=conversation_id, turn_id=turn.id, mode=mode)
+        await request.app.state.coordinator.schedule_chat(runs[0].id, payload.text, conversation_id=conversation_id, turn_id=turn.id, recommended_agents=tuple(recommended_agents))
         return ConversationTurnResponse(turn_id=turn.id, conversation_id=conversation_id, state=turn.status, route_source=decision.source,
-            collaboration_mode=mode, synthesize=mode is CollaborationMode.PARALLEL, selected_agents=tuple(targets),
+            collaboration_mode=mode, synthesize=False, selected_agents=tuple(targets),
             agent_runs=tuple(AgentRunResponse(id=run.id, agent_id=run.agent_id, model=run.model, status=run.status) for run in runs))
     contract = payload.contract; assert contract is not None
     latest = await _latest_task(session, conversation_id)

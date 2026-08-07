@@ -31,16 +31,17 @@ class BudgetedModelToolAdapter:
         return await self._delegate.execute(name, arguments)
 
 
-def bind_agent_mcp_tools(
+def bind_agent_tools(
     registry: ToolRegistry | None,
     definition: AgentDefinition,
     context: ToolContext,
     *,
     max_calls: int,
+    allowed_tools: frozenset[str] | None = None,
 ) -> AgentToolBinding | None:
     if registry is None or max_calls <= 0:
         return None
-    definitions = registry.model_mcp_tools(definition.allowed_tools)
+    definitions = registry.model_tools(allowed_tools or definition.allowed_tools)
     if not definitions:
         return None
     allowed = frozenset(definition.name for definition in definitions)

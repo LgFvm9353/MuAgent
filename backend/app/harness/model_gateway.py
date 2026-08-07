@@ -2,16 +2,13 @@ import asyncio
 import json
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any, Protocol, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import anthropic
 from pydantic import BaseModel
 
-from app.harness.structured_tools import (
-    anthropic_text,
-    parse_structured_output,
-    structured_output_system,
-)
+from app.agent_loop.messages import ToolCall, ToolResult
+from app.agent_loop.providers import ModelTurn, ModelTurnProvider
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
 
@@ -52,8 +49,65 @@ class ModelResult:
     usage: ModelUsage
 
 
-class ModelToolCallPort(Protocol):
-    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
+class AnthropicModelProvider(ModelTurnProvider):
+    """One-turn Anthropic adapter; AgentLoop owns all continuation decisions."""
+
+    def __init__(self, gateway: "ModelGateway") -> None:
+        self._gateway = gateway
+
+    async def turn(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[dict[str, Any]],
+        tools: tuple[dict[str, Any], ...],
+        max_tokens: int,
+        effort: str,
+    ) -> ModelTurn:
+        result = await self._gateway.streaming(
+            model=model,
+            system=system,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            effort=effort,
+        )
+        calls: list[ToolCall] = []
+        for block in result.content:
+            if getattr(block, "type", None) == "tool_use":
+                arguments = getattr(block, "input", None)
+                calls.append(
+                    ToolCall(
+                        str(block.id),
+                        str(block.name),
+                        arguments if isinstance(arguments, dict) else None,
+                    )
+                )
+        assistant = [self._gateway._serialize_block(block) for block in result.content]
+        return ModelTurn(
+            tuple(result.content),
+            result.usage.stop_reason or "end_turn",
+            tuple(calls),
+            result.usage,
+            {"role": "assistant", "content": assistant},
+        )
+
+    def tool_result_messages(self, results: tuple[ToolResult, ...]) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": item.call_id,
+                        "is_error": item.is_error,
+                        "content": json.dumps(item.content, ensure_ascii=False, sort_keys=True),
+                    }
+                    for item in results
+                ],
+            }
+        ]
 
 
 class ModelGateway:
@@ -63,14 +117,15 @@ class ModelGateway:
         *,
         concurrency: int,
         timeout_seconds: float,
-        max_continuations: int = 3,
-        max_retries: int = 2,
+        max_retries: int = 8,
     ) -> None:
         self._client = client
         self._semaphore = asyncio.Semaphore(concurrency)
         self._timeout = timeout_seconds
-        self._max_continuations = max_continuations
         self._max_retries = max_retries
+
+    def model_turn_provider(self) -> AnthropicModelProvider:
+        return AnthropicModelProvider(self)
 
     async def structured(
         self,
@@ -119,41 +174,6 @@ class ModelGateway:
             usage=self._usage(response, started, retry_count=attempt),
         )
 
-    async def structured_with_tools(
-        self,
-        *,
-        model: str,
-        system: str,
-        user_content: str,
-        output_model: type[OutputT],
-        tools: tuple[dict[str, Any], ...],
-        executor: ModelToolCallPort,
-        max_tool_rounds: int = 6,
-        max_tokens: int = 16_000,
-        effort: str = "high",
-    ) -> ModelResult:
-        if not tools:
-            return await self.structured(
-                model=model,
-                system=system,
-                user_content=user_content,
-                output_model=output_model,
-                max_tokens=max_tokens,
-                effort=effort,
-            )
-        result = await self.tool_loop(
-            model=model,
-            system=structured_output_system(system, output_model),
-            messages=[{"role": "user", "content": user_content}],
-            tools=tools,
-            executor=executor,
-            max_tool_rounds=max_tool_rounds,
-            max_tokens=max_tokens,
-            effort=effort,
-        )
-        parsed = parse_structured_output(anthropic_text(result.content), output_model)
-        return ModelResult(result.content, parsed, result.usage)
-
     async def streaming(
         self,
         *,
@@ -201,82 +221,6 @@ class ModelGateway:
             parsed_output=None,
             usage=self._usage(response, started, retry_count=attempt),
         )
-
-    async def tool_loop(
-        self,
-        *,
-        model: str,
-        system: str,
-        messages: list[dict[str, Any]],
-        tools: tuple[dict[str, Any], ...],
-        executor: ModelToolCallPort,
-        max_tool_rounds: int = 10,
-        max_tokens: int = 64_000,
-        effort: str = "high",
-    ) -> ModelResult:
-        conversation = list(messages)
-        pause_count = 0
-        tool_rounds = 0
-        aggregate: ModelUsage | None = None
-        while tool_rounds <= max_tool_rounds:
-            result = await self.streaming(
-                model=model,
-                system=system,
-                messages=conversation,
-                tools=tools,
-                max_tokens=max_tokens,
-                effort=effort,
-            )
-            aggregate = self._merge_usage(aggregate, result.usage)
-            stop_reason = result.usage.stop_reason
-            if stop_reason == "end_turn":
-                return ModelResult(result.content, result.parsed_output, aggregate)
-            assistant_content = [self._serialize_block(block) for block in result.content]
-            conversation.append({"role": "assistant", "content": assistant_content})
-            if stop_reason == "pause_turn":
-                pause_count += 1
-                if pause_count > self._max_continuations:
-                    raise PermanentModelError("pause_turn continuation limit exceeded")
-                conversation.append({"role": "user", "content": "Continue the previous response."})
-                continue
-            tool_uses = [
-                block for block in result.content if getattr(block, "type", None) == "tool_use"
-            ]
-            if not tool_uses:
-                raise PermanentModelError("tool_use stop reason contained no tool calls")
-            tool_rounds += 1
-            if tool_rounds > max_tool_rounds:
-                raise PermanentModelError("tool loop round limit exceeded")
-
-            async def execute(block: Any) -> dict[str, Any]:
-                tool_use_id = str(block.id)
-                name = str(block.name)
-                arguments = getattr(block, "input", None)
-                if not isinstance(arguments, dict):
-                    return {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "is_error": True,
-                        "content": "Tool arguments were not an object.",
-                    }
-                try:
-                    output = await executor.execute(name, arguments)
-                    return {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": json.dumps(output, ensure_ascii=False, sort_keys=True),
-                    }
-                except Exception as error:
-                    return {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "is_error": True,
-                        "content": f"Tool failed: {type(error).__name__}",
-                    }
-
-            results = [await execute(block) for block in tool_uses]
-            conversation.append({"role": "user", "content": results})
-        raise PermanentModelError("tool loop round limit exceeded")
 
     @staticmethod
     def _serialize_block(block: Any) -> dict[str, Any]:
