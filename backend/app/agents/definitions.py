@@ -33,7 +33,8 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             role=role,
             model=settings.agent_model(agent_id),
             prompt_path=prompts_root / "subagents" / f"{agent_id}.txt",
-            prompt_version="v2",
+            # v3 aligns the role prompts with the pi-subagents builtin contracts.
+            prompt_version="v3",
             schema_version="v2",
             output_model=AgentBrief,
             allowed_tools=allowed_tools | supervisor_tools,

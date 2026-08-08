@@ -27,7 +27,7 @@ class AgentBudgetExceededError(AgentLoopError):
 class AgentLoopConfig:
     max_turns: int = 16
     max_tool_calls: int = 64
-    max_continuations: int = 3
+    max_continuations: int = 8
     parallel_tools: bool = True
     max_tokens: int = 64_000
     effort: str = "high"

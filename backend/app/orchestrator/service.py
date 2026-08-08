@@ -32,7 +32,7 @@ class OrchestratorService:
         agents: AgentRegistry,
         tools: ToolRegistry,
         collaboration_sink: CollaborationSink | None = None,
-        max_specialists: int = 3,
+        max_specialists: int = 8,
     ) -> None:
         self._sessions = sessions
         self._runtime = runtime

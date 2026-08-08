@@ -135,7 +135,7 @@ class Settings(BaseSettings):
     mention_execution_tools: str = DEFAULT_MENTION_EXECUTION_TOOLS
     collaboration_default_mode: Literal["single", "parallel"] = DEFAULT_COLLABORATION_DEFAULT_MODE
     collaboration_default_synthesize: bool = DEFAULT_COLLABORATION_DEFAULT_SYNTHESIZE
-    collaboration_max_agents: int = Field(default=DEFAULT_COLLABORATION_MAX_AGENTS, ge=2, le=3)
+    collaboration_max_agents: int = Field(default=DEFAULT_COLLABORATION_MAX_AGENTS, ge=2, le=8)
     collaboration_max_tool_rounds_per_agent: int = Field(
         default=DEFAULT_COLLABORATION_MAX_TOOL_ROUNDS_PER_AGENT, ge=0, le=20
     )

@@ -65,7 +65,7 @@ class CollaborationPolicy(BaseModel):
 
     mode: CollaborationMode = CollaborationMode.PARALLEL
     synthesize: bool = False
-    max_agents: int = Field(default=3, ge=1, le=3)
+    max_agents: int = Field(default=8, ge=1, le=8)
     max_tool_rounds_per_agent: int = Field(default=6, ge=0, le=20)
     max_tool_calls_per_agent: int = Field(default=10, ge=0, le=50)
     max_tool_calls_per_turn: int = Field(default=20, ge=0, le=100)

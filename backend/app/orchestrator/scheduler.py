@@ -170,7 +170,7 @@ class Scheduler:
         self,
         runtime: AgentRuntime,
         collaboration_sink: CollaborationSink | None = None,
-        max_specialists: int = 3,
+        max_specialists: int = 8,
     ) -> None:
         if max_specialists < 1:
             raise ValueError("max_specialists must be positive")
