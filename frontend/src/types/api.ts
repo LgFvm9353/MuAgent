@@ -114,6 +114,21 @@ export interface PendingConfirmation {
   call_hash: string
 }
 
+export interface SupervisorRequest {
+  request_id: string
+  run_id: string | null
+  agent: string
+  reason: 'need_decision' | 'interview_request' | 'progress_update'
+  message: string
+  options: string[]
+  conversation_id: string | null
+  turn_id: string | null
+  status: 'pending' | 'replied'
+  reply: string | null
+  created_at: string
+  replied_at: string | null
+}
+
 export interface TaskContract {
   task_id: string
   goal: string
@@ -180,6 +195,7 @@ export interface ChatMessage {
   agentId?: string
   phase?: string
   isFinal?: boolean
+  supervisorRequest?: SupervisorRequest
 }
 
 export type StreamStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error'

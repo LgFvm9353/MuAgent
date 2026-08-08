@@ -20,7 +20,19 @@ class RecoveryService:
         recovered: list[UUID] = []
         for task in await self._repository.list_recoverable():
             state = TaskState(task.state)
-            if state in {TaskState.WAITING_CONFIRMATION, TaskState.NEEDS_REVIEW}:
+            if state is TaskState.NEEDS_REVIEW:
+                continue
+            if state is TaskState.WAITING_CONFIRMATION:
+                await self._repository.transition(
+                    task.id,
+                    TaskState.EXECUTING,
+                    expected_version=task.version,
+                    trace_id=task.trace_id,
+                    reason="legacy confirmation gate removed; resuming through supervisor inbox",
+                )
+                await self._session.commit()
+                await schedule(task.id)
+                recovered.append(task.id)
                 continue
             if state is TaskState.PENDING:
                 await schedule(task.id)

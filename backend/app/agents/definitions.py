@@ -11,6 +11,7 @@ from app.harness.registry import AgentDefinition, AgentRegistry
 def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistry:
     docs_tools = frozenset({"mcp.context7.resolve-library-id", "mcp.context7.query-docs"})
     delegation_tools = frozenset({"subagent"})
+    supervisor_tools = frozenset({"contact_supervisor", "subagent_supervisor"})
     workspace_tools = settings.mention_execution_tool_set
 
     def definition(
@@ -35,7 +36,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             prompt_version="v2",
             schema_version="v2",
             output_model=AgentBrief,
-            allowed_tools=allowed_tools,
+            allowed_tools=allowed_tools | supervisor_tools,
             timeout_seconds=settings.model_timeout_seconds,
             max_retries=2,
             display_name=display_name,

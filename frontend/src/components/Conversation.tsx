@@ -26,7 +26,7 @@ function AgentProgress({ agents }: { agents: AgentProgressItem[] }) {
   </div>
 }
 
-export function Conversation({ messages, loading, error, onRetry, progressAgents = [] }: { messages: ChatMessage[]; loading: boolean; error: string | null; onRetry: () => void; progressAgents?: AgentProgressItem[] }) {
+export function Conversation({ messages, loading, error, onRetry, progressAgents = [], onSupervisorReply }: { messages: ChatMessage[]; loading: boolean; error: string | null; onRetry: () => void; progressAgents?: AgentProgressItem[]; onSupervisorReply?: (requestId: string, reply: string) => Promise<void> }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const initialized = useRef(false)
   const following = useRef(true)
@@ -68,5 +68,5 @@ export function Conversation({ messages, loading, error, onRetry, progressAgents
   if (loading) return <div ref={rootRef} className="empty-state"><RefreshCw className="animate-spin text-violet-400"/><p>正在加载任务记录…</p></div>
   if (error) return <div ref={rootRef} className="empty-state"><p className="text-red-300">{error}</p><button className="secondary-button" onClick={onRetry}><RefreshCw size={15}/>重试</button></div>
   if (messages.length === 0 && progressAgents.length === 0) return <div ref={rootRef} className="empty-state"><div className="hero-icon"><Bot size={32}/></div><h2>让多个 Agent 为你协作</h2><p>描述一个清晰的任务目标，系统将自动分析、规划、执行并验证结果。</p></div>
-  return <div ref={rootRef} className="conversation">{messages.map((message) => <AgentMessage key={message.id} message={message}/>)}{progressAgents.length > 0 && <AgentProgress agents={progressAgents}/>} {showJump && <button className="jump-to-bottom" type="button" onClick={jumpToBottom}><ArrowDown size={14}/>回到底部</button>}</div>
+  return <div ref={rootRef} className="conversation">{messages.map((message) => <AgentMessage key={message.id} message={message} onSupervisorReply={onSupervisorReply}/>)}{progressAgents.length > 0 && <AgentProgress agents={progressAgents}/>} {showJump && <button className="jump-to-bottom" type="button" onClick={jumpToBottom}><ArrowDown size={14}/>回到底部</button>}</div>
 }

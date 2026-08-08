@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from contextvars import ContextVar
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -15,6 +16,215 @@ from app.tools.registry import ToolDefinition, ToolRegistry
 SubagentAction = Literal["run", "all", "status", "wait", "steer", "stop"]
 ContextMode = Literal["fresh", "fork"]
 RunStatus = Literal["queued", "running", "completed", "failed", "stopped"]
+SupervisorReason = Literal["need_decision", "interview_request", "progress_update"]
+
+_CURRENT_SUPERVISOR_RUN: ContextVar[str | None] = ContextVar(
+    "current_supervisor_run", default=None
+)
+_CURRENT_SUPERVISOR_AGENT: ContextVar[str | None] = ContextVar(
+    "current_supervisor_agent", default=None
+)
+_CURRENT_SUPERVISOR_CONVERSATION: ContextVar[tuple[str, str] | None] = ContextVar(
+    "current_supervisor_conversation", default=None
+)
+
+
+def set_supervisor_context(
+    run_id: str | None,
+    agent: str | None,
+    conversation: tuple[str, str] | None,
+) -> tuple[object, object, object]:
+    return (
+        _CURRENT_SUPERVISOR_RUN.set(
+            run_id if run_id is not None else _CURRENT_SUPERVISOR_RUN.get()
+        ),
+        _CURRENT_SUPERVISOR_AGENT.set(
+            agent if agent is not None else _CURRENT_SUPERVISOR_AGENT.get()
+        ),
+        _CURRENT_SUPERVISOR_CONVERSATION.set(
+            conversation if conversation is not None else _CURRENT_SUPERVISOR_CONVERSATION.get()
+        ),
+    )
+
+
+def reset_supervisor_context(tokens: tuple[object, object, object]) -> None:
+    run_token, agent_token, conversation_token = tokens
+    _CURRENT_SUPERVISOR_RUN.reset(run_token)  # type: ignore[arg-type]
+    _CURRENT_SUPERVISOR_AGENT.reset(agent_token)  # type: ignore[arg-type]
+    _CURRENT_SUPERVISOR_CONVERSATION.reset(conversation_token)  # type: ignore[arg-type]
+
+
+class ContactSupervisorInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: SupervisorReason
+    message: str = Field(min_length=1, max_length=20_000)
+    options: tuple[str, ...] = Field(default=(), max_length=16)
+
+
+class ContactSupervisorOutput(BaseModel):
+    request_id: str
+    status: Literal["pending", "replied"]
+    reply: str | None = None
+
+
+class SupervisorControlInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["pending", "reply"]
+    request_id: str | None = None
+    message: str | None = Field(default=None, min_length=1, max_length=20_000)
+
+
+class SupervisorControlOutput(BaseModel):
+    status: str
+    requests: tuple[dict[str, Any], ...] = ()
+    request_id: str | None = None
+    reply: str | None = None
+
+
+@dataclass(slots=True)
+class SupervisorRequest:
+    request_id: str
+    run_id: str | None
+    agent: str
+    reason: SupervisorReason
+    message: str
+    options: tuple[str, ...]
+    conversation_id: str | None
+    turn_id: str | None
+    status: Literal["pending", "replied"] = "pending"
+    reply: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    replied_at: datetime | None = None
+
+
+class SupervisorInbox:
+    """Pi-style parent/supervisor inbox.
+
+    Child agents create a request and block for a reply when the reason is
+    blocking. The parent-facing API can list pending requests and reply by id.
+    """
+
+    def __init__(self) -> None:
+        self._requests: dict[str, SupervisorRequest] = {}
+        self._waiters: dict[str, asyncio.Event] = {}
+        self._lock = asyncio.Lock()
+
+    async def contact(self, request: ContactSupervisorInput) -> ContactSupervisorOutput:
+        conversation = _CURRENT_SUPERVISOR_CONVERSATION.get()
+        item = SupervisorRequest(
+            request_id=str(uuid4()),
+            run_id=_CURRENT_SUPERVISOR_RUN.get(),
+            agent=_CURRENT_SUPERVISOR_AGENT.get() or "agent",
+            reason=request.reason,
+            message=request.message,
+            options=request.options,
+            conversation_id=conversation[0] if conversation else None,
+            turn_id=conversation[1] if conversation else None,
+        )
+        async with self._lock:
+            self._requests[item.request_id] = item
+            waiter = asyncio.Event()
+            self._waiters[item.request_id] = waiter
+        if request.reason == "progress_update":
+            item.status = "replied"
+            item.replied_at = datetime.now(UTC)
+            self._waiters.pop(item.request_id, None)
+            return ContactSupervisorOutput(request_id=item.request_id, status="replied")
+        await waiter.wait()
+        return ContactSupervisorOutput(
+            request_id=item.request_id,
+            status="replied",
+            reply=item.reply,
+        )
+
+    async def pending(self, conversation_id: str | None = None) -> tuple[SupervisorRequest, ...]:
+        async with self._lock:
+            return tuple(
+                item
+                for item in self._requests.values()
+                if item.status == "pending"
+                and (conversation_id is None or item.conversation_id == conversation_id)
+            )
+
+    async def reply(self, request_id: str, message: str) -> SupervisorRequest:
+        async with self._lock:
+            item = self._requests.get(request_id)
+            if item is None:
+                raise KeyError(request_id)
+            if item.status != "pending":
+                raise ValueError("supervisor request already answered")
+            item.status = "replied"
+            item.reply = message
+            item.replied_at = datetime.now(UTC)
+            waiter = self._waiters.get(request_id)
+            if waiter is not None:
+                waiter.set()
+            return item
+
+
+def register_supervisor_tool(registry: ToolRegistry, inbox: SupervisorInbox) -> None:
+    registry.register(
+        ToolDefinition[ContactSupervisorInput, ContactSupervisorOutput](
+            name="contact_supervisor",
+            description=(
+                "Ask the parent supervisor for a decision or structured user input. "
+                "need_decision and interview_request pause until a reply arrives; "
+                "progress_update is non-blocking."
+            ),
+            input_model=ContactSupervisorInput,
+            output_model=ContactSupervisorOutput,
+            risk=RiskLevel.LOW,
+            timeout_seconds=86_400,
+            idempotent=False,
+            max_output_bytes=64_000,
+            handler=inbox.contact,
+            source=ToolSource.LOCAL,
+            canonical_id="local.contact_supervisor",
+        )
+    )
+    registry.register(
+        ToolDefinition[SupervisorControlInput, SupervisorControlOutput](
+            name="subagent_supervisor",
+            description="Inspect pending child-agent requests or reply to one by id.",
+            input_model=SupervisorControlInput,
+            output_model=SupervisorControlOutput,
+            risk=RiskLevel.LOW,
+            timeout_seconds=30,
+            idempotent=False,
+            max_output_bytes=256_000,
+            handler=lambda request: supervisor_control(inbox, request),
+            source=ToolSource.LOCAL,
+            canonical_id="local.subagent_supervisor",
+        )
+    )
+
+
+async def supervisor_control(
+    inbox: SupervisorInbox,
+    request: SupervisorControlInput,
+) -> SupervisorControlOutput:
+    if request.action == "pending":
+        items = await inbox.pending()
+        return SupervisorControlOutput(
+            status="pending",
+            requests=tuple(
+                {
+                    "request_id": item.request_id,
+                    "agent": item.agent,
+                    "reason": item.reason,
+                    "message": item.message,
+                    "options": item.options,
+                    "run_id": item.run_id,
+                }
+                for item in items
+            ),
+        )
+    if request.request_id is None or request.message is None:
+        return SupervisorControlOutput(status="error")
+    item = await inbox.reply(request.request_id, request.message)
+    return SupervisorControlOutput(status="replied", request_id=item.request_id, reply=item.reply)
 
 
 class SubagentTaskInput(BaseModel):
@@ -89,8 +299,14 @@ class _RunRecord:
 class SubagentRunManager:
     """Parent-facing run control for independent child AgentLoops."""
 
-    def __init__(self, runner: ChildRunner) -> None:
+    def __init__(
+        self,
+        runner: ChildRunner,
+        *,
+        supervisor_inbox: SupervisorInbox | None = None,
+    ) -> None:
         self._runner = runner
+        self._supervisor_inbox = supervisor_inbox
         self._runs: dict[str, _RunRecord] = {}
         self._groups: dict[str, tuple[str, ...]] = {}
 
@@ -224,6 +440,11 @@ class SubagentRunManager:
 
         async def operation() -> dict[str, Any]:
             record.status = "running"
+            context_tokens = set_supervisor_context(
+                record.id,
+                record.agent,
+                _CURRENT_SUPERVISOR_CONVERSATION.get(),
+            )
             try:
                 if semaphore is None:
                     result = await self._runner(
@@ -251,6 +472,7 @@ class SubagentRunManager:
                 record.status = "failed"
                 return {"error": {"code": record.error}}
             finally:
+                reset_supervisor_context(context_tokens)
                 record.completed_at = datetime.now(UTC)
 
         record.operation = asyncio.create_task(operation(), name=f"subagent:{run_id}")

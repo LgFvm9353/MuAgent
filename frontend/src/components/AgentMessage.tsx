@@ -5,8 +5,10 @@ import remarkGfm from 'remark-gfm'
 import { parseApiDate } from '../lib/dateTime'
 import type { ChatMessage } from '../types/api'
 
-export function AgentMessage({ message }: { message: ChatMessage }) {
+export function AgentMessage({ message, onSupervisorReply }: { message: ChatMessage; onSupervisorReply?: (requestId: string, reply: string) => Promise<void> }) {
   const [copied, setCopied] = useState(false)
+  const [reply, setReply] = useState('')
+  const [replying, setReplying] = useState(false)
   const isUser = message.role === 'user'
   const agentClass = message.agentId ? ` agent-${message.agentId.replaceAll('_', '-')}` : ''
 
@@ -23,6 +25,18 @@ export function AgentMessage({ message }: { message: ChatMessage }) {
     } catch { /* Clipboard access may be unavailable outside a secure context. */ }
   }
 
+  const request = message.supervisorRequest
+  const sendReply = async (value: string) => {
+    if (!request || !onSupervisorReply || !value.trim()) return
+    setReplying(true)
+    try {
+      await onSupervisorReply(request.request_id, value.trim())
+      setReply('')
+    } finally {
+      setReplying(false)
+    }
+  }
+
   return <article className={`message-row ${isUser ? 'message-row-user' : ''}${message.isFinal ? ' message-row-final' : ''}${agentClass}`}>
     <div className={`avatar ${isUser ? 'avatar-user' : ''}`}>{isUser ? <User size={17}/> : <Bot size={17}/>}</div>
     <div className={`message ${isUser ? 'message-user' : `message-${message.tone || 'default'}`}${message.isFinal ? ' message-final' : ''}`}>
@@ -31,6 +45,10 @@ export function AgentMessage({ message }: { message: ChatMessage }) {
       {message.isFinal
         ? <div className="message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ children, ...props }) => <a {...props} target="_blank" rel="noreferrer noopener">{children}</a> }}>{message.content}</ReactMarkdown></div>
         : <p className="whitespace-pre-wrap leading-7">{message.content}</p>}
+      {request && <div className="supervisor-inline-actions">
+        {request.options.map((option) => <button className="secondary-button" key={option} disabled={replying} onClick={() => void sendReply(option)}>{option}</button>)}
+        <div className="supervisor-inline-input"><input value={reply} onChange={(event) => setReply(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void sendReply(reply) }} placeholder="回复 agent" disabled={replying}/><button className="primary-button" disabled={replying || !reply.trim()} onClick={() => void sendReply(reply)}>回复</button></div>
+      </div>}
       <time className="mt-2 block text-[11px] opacity-45">{parseApiDate(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
     </div>
   </article>

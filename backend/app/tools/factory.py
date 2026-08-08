@@ -100,7 +100,7 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
             name="modify_workspace_file",
             description=(
                 "Replace an existing UTF-8 file and return a unified diff. "
-                "Requires confirmation as a high-risk overwrite."
+                "Use contact_supervisor when the scope or intended change is unclear."
             ),
             input_model=WriteFileInput,
             output_model=WriteFileOutput,

@@ -12,13 +12,13 @@ import {
   ApiError,
   cancelTask,
   createConversation,
-  decideConfirmation,
   getConversation,
   getConversationMessages,
-  getPendingConfirmations,
   getTask,
   getTaskEvents,
   getTaskResult,
+  listPendingSupervisorRequests,
+  replyToSupervisorRequest,
   listConversations,
   sendConversationMessage,
 } from './lib/api'
@@ -28,11 +28,11 @@ import type {
   ChatMessage,
   ConversationMessage,
   ConversationThread,
-  PendingConfirmation,
   Task,
   TaskEvent,
   TaskResult,
   TaskState,
+  SupervisorRequest,
   WorkspaceAgentId,
   WorkspaceAgentStatus,
 } from './types/api'
@@ -50,7 +50,7 @@ function Workbench() {
   const [activeTask, setActiveTask] = useState<Task | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
-  const [confirmations, setConfirmations] = useState<PendingConfirmation[]>([])
+  const [supervisorRequests, setSupervisorRequests] = useState<SupervisorRequest[]>([])
   const [result, setResult] = useState<TaskResult | null>(null)
   const [optimisticWorkingAgents, setOptimisticWorkingAgents] = useState<Array<{ id: WorkspaceAgentId; status: WorkspaceAgentStatus }>>([])
   const [loading, setLoading] = useState(true)
@@ -76,6 +76,25 @@ function Workbench() {
 
   useEffect(() => { void loadThreads() }, [loadThreads])
 
+  useEffect(() => {
+    if (!selected) {
+      setSupervisorRequests([])
+      return
+    }
+    let disposed = false
+    const poll = async () => {
+      try {
+        const items = await listPendingSupervisorRequests(selected.id)
+        if (!disposed) setSupervisorRequests(items)
+      } catch {
+        // The request inbox is best-effort; the conversation stream remains authoritative.
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 1000)
+    return () => { disposed = true; window.clearInterval(timer) }
+  }, [selected?.id])
+
   const loadSelected = useCallback(async (thread: ConversationThread) => {
     const generation = ++loadGeneration.current
     loadController.current?.abort()
@@ -84,7 +103,6 @@ function Workbench() {
     setSelected(thread)
     setEvents([])
     setConversation([])
-    setConfirmations([])
     setResult(null)
     setOptimisticWorkingAgents([])
     setError(null)
@@ -99,16 +117,14 @@ function Workbench() {
       setSelected(detail)
       setConversation(messages)
       if (detail.latest_task_id) {
-        const [task, timeline, pending, taskResult] = await Promise.all([
+        const [task, timeline, taskResult] = await Promise.all([
           getTask(detail.latest_task_id, controller.signal),
           getTaskEvents(detail.latest_task_id, controller.signal),
-          getPendingConfirmations(detail.latest_task_id, controller.signal),
           getTaskResult(detail.latest_task_id, controller.signal),
         ])
         if (generation !== loadGeneration.current) return
         setActiveTask(task)
         setEvents(timeline)
-        setConfirmations(pending)
         setResult(taskResult)
       } else {
         setActiveTask(null)
@@ -143,15 +159,13 @@ function Workbench() {
       setConversation(messages)
       setThreads((items) => items.map((item) => item.id === thread.id ? thread : item))
       if (thread.latest_task_id) {
-        const [task, timeline, pending, taskResult] = await Promise.all([
+        const [task, timeline, taskResult] = await Promise.all([
           getTask(thread.latest_task_id),
           getTaskEvents(thread.latest_task_id),
-          getPendingConfirmations(thread.latest_task_id),
           getTaskResult(thread.latest_task_id),
         ])
         setActiveTask(task)
         setEvents(timeline)
-        setConfirmations(pending)
         setResult(taskResult)
       }
     } catch { /* SSE refresh is best-effort. */ }
@@ -162,11 +176,6 @@ function Workbench() {
     if (!event.to_state) return
     setActiveTask((task) => task ? { ...task, state: event.to_state as TaskState, updated_at: event.created_at } : task)
     setSelected((thread) => thread ? { ...thread, latest_task_state: event.to_state as TaskState, updated_at: event.created_at } : thread)
-    if (event.to_state === 'WAITING_CONFIRMATION' && activeTask?.id) {
-      void Promise.all([getPendingConfirmations(activeTask.id), getTaskResult(activeTask.id)])
-        .then(([pending, taskResult]) => { setConfirmations(pending); setResult(taskResult) })
-        .catch(() => undefined)
-    }
   }, [activeTask?.id])
 
   const updateMessage = useCallback((message: ConversationMessage) => {
@@ -202,8 +211,22 @@ function Workbench() {
   })
 
   const messages = useMemo<ChatMessage[]>(
-    () => conversation.map(conversationToMessage),
-    [conversation],
+    () => {
+      const inlineRequests = supervisorRequests.map((request) => ({
+        id: `supervisor-${request.request_id}`,
+        role: 'agent' as const,
+        title: `${request.agent} 等待你的决定`,
+        content: request.message,
+        createdAt: request.created_at,
+        tone: 'warning' as const,
+        agentId: request.agent,
+        phase: 'supervisor',
+        supervisorRequest: request,
+      }))
+      return [...conversation.map(conversationToMessage), ...inlineRequests]
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    },
+    [conversation, supervisorRequests],
   )
   const agentWorkspace = useMemo(
     () => activeTask
@@ -240,7 +263,6 @@ function Workbench() {
       setSelected(thread)
       setThreads((items) => items.map((item) => item.id === thread.id ? thread : item))
       setEvents([])
-      setConfirmations([])
       setResult(null)
       const messages = await getConversationMessages(selected.id)
       setConversation(messages)
@@ -280,7 +302,6 @@ function Workbench() {
       setActiveTask(null)
       setEvents([])
       setConversation([])
-      setConfirmations([])
       setResult(null)
       setOptimisticWorkingAgents([])
       setError(null)
@@ -290,19 +311,6 @@ function Workbench() {
     } finally {
       setBusy(false)
     }
-  }
-
-  const decide = async (confirmation: PendingConfirmation, approved: boolean) => {
-    if (!activeTask) return
-    setBusy(true)
-    try {
-      await decideConfirmation(activeTask.id, confirmation, approved)
-      setConfirmations(await getPendingConfirmations(activeTask.id))
-      show({ tone: approved ? 'success' : 'warning', title: approved ? '已批准执行步骤' : '已拒绝执行步骤' })
-      await refreshSelected()
-    } catch (cause) {
-      show({ tone: 'error', title: '提交确认失败', description: errorText(cause) })
-    } finally { setBusy(false) }
   }
 
   const cancel = async () => {
@@ -316,6 +324,11 @@ function Workbench() {
     } finally { setBusy(false) }
   }
 
+  const replySupervisor = async (requestId: string, reply: string) => {
+    await replyToSupervisorRequest(requestId, reply)
+    setSupervisorRequests((items) => items.filter((item) => item.request_id !== requestId))
+  }
+
   const connected = conversationStreamStatus === 'connected'
     || taskStreamStatus === 'connected'
   return <div className="app-shell">
@@ -327,8 +340,7 @@ function Workbench() {
         <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()}><Plus size={15}/>新建对话</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : conversationStreamStatus === 'reconnecting' || taskStreamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
       </header>
       {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div><div className="flex items-center gap-2"><AgentWorkingIndicator agents={agentWorkspace}/>{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div></div>}
-      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} progressAgents={progressAgents} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{activeTask && agentWorkspace && <CollaborationDetails task={activeTask} agents={agentWorkspace} events={events} result={result}/>}</section>
-      {confirmations.length > 0 && <section className="confirmation-panel">{confirmations.map((confirmation) => <article className="confirmation-card" key={confirmation.call_hash}><div><strong>Executor 请求人工确认</strong><p>{confirmation.tool_name} · {confirmation.risk}</p><p>{confirmation.impact}</p><details><summary>查看工具参数</summary><pre>{JSON.stringify(confirmation.arguments, null, 2)}</pre></details></div><div className="confirmation-actions"><button className="secondary-button" disabled={busy} onClick={() => void decide(confirmation, false)}>拒绝</button><button className="primary-button" disabled={busy} onClick={() => void decide(confirmation, true)}>批准</button></div></article>)}</section>}
+      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} progressAgents={progressAgents} onSupervisorReply={replySupervisor} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{activeTask && agentWorkspace && <CollaborationDetails task={activeTask} agents={agentWorkspace} events={events} result={result}/>}</section>
       {selected ? <TaskComposer busy={busy} running={running} onSubmit={submit} onCancel={cancel}/> : <div className="p-6 text-center text-sm text-zinc-500">请先新建一个对话。</div>}
     </main>
   </div>

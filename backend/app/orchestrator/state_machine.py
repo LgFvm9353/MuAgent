@@ -6,6 +6,8 @@ class TaskState(StrEnum):
     ANALYZING = "ANALYZING"
     PLANNING = "PLANNING"
     POLICY_CHECK = "POLICY_CHECK"
+    # Kept for reading legacy task rows. New tasks use the supervisor
+    # decision-request flow instead of the old tool-confirmation gate.
     WAITING_CONFIRMATION = "WAITING_CONFIRMATION"
     EXECUTING = "EXECUTING"
     VERIFYING = "VERIFYING"
@@ -58,7 +60,6 @@ _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     ),
     TaskState.POLICY_CHECK: frozenset(
         {
-            TaskState.WAITING_CONFIRMATION,
             TaskState.EXECUTING,
             TaskState.REJECTED,
             TaskState.FAILED,

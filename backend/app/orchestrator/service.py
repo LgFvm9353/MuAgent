@@ -21,7 +21,6 @@ from app.models import (
 from app.orchestrator.scheduler import AgentRuntime, CollaborationSink, Scheduler
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
-from app.tools.policy import ToolPolicy
 from app.tools.registry import ToolRegistry
 
 
@@ -185,16 +184,12 @@ class OrchestratorService:
             )
             await session.flush()
             task = await repository.get(task_id, for_update=True)
-            confirmations = ToolPolicy(self._tools).confirmations(result.plan)
-            target = TaskState.WAITING_CONFIRMATION if confirmations else TaskState.EXECUTING
             await repository.transition(
                 task_id,
-                target,
+                TaskState.EXECUTING,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason="high-risk confirmation required"
-                if confirmations
-                else "tool policy approved",
+                reason="execution plan accepted; supervisor decisions are requested by agents when needed",
             )
             await session.commit()
 
@@ -363,16 +358,11 @@ class OrchestratorService:
             )
             await session.flush()
             task = await repository.get(task_id, for_update=True)
-            confirmations = ToolPolicy(self._tools).confirmations(new_plan)
             await repository.transition(
                 task_id,
-                TaskState.WAITING_CONFIRMATION if confirmations else TaskState.EXECUTING,
+                TaskState.EXECUTING,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason=(
-                    "replanned high-risk operations require confirmation"
-                    if confirmations
-                    else "replanned execution approved"
-                ),
+                reason="replanned execution accepted; supervisor decisions remain agent-initiated",
             )
             await session.commit()

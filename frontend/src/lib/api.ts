@@ -1,4 +1,4 @@
-import type { ConversationMessage, ConversationThread, ConversationTurn, PendingConfirmation, Task, TaskArtifact, TaskArtifactContent, TaskContract, TaskEvent, TaskResult } from '../types/api'
+import type { ConversationMessage, ConversationThread, ConversationTurn, PendingConfirmation, SupervisorRequest, Task, TaskArtifact, TaskArtifactContent, TaskContract, TaskEvent, TaskResult } from '../types/api'
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -134,6 +134,24 @@ export function decideConfirmation(
       approved,
       decided_by: 'local-user',
     }),
+  })
+}
+
+export function listPendingSupervisorRequests(
+  conversationId?: string,
+  signal?: AbortSignal,
+): Promise<SupervisorRequest[]> {
+  const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : ''
+  return request(`/subagents/supervisor/pending${query}`, { signal })
+}
+
+export function replyToSupervisorRequest(
+  requestId: string,
+  message: string,
+): Promise<SupervisorRequest> {
+  return request(`/subagents/supervisor/${encodeURIComponent(requestId)}/reply`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
   })
 }
 

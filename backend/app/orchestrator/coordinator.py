@@ -46,7 +46,12 @@ from app.tools.contracts import ToolContext
 from app.tools.executor import ToolExecutor
 from app.tools.factory import build_tool_registry
 from app.tools.registry import ToolRegistry
-from app.tools.subagent import AttachLoop, ContextMode
+from app.tools.subagent import (
+    AttachLoop,
+    ContextMode,
+    reset_supervisor_context,
+    set_supervisor_context,
+)
 from app.workspace.task_directory import (
     WorkspacePreconditionError,
     ensure_task_directory,
@@ -134,15 +139,19 @@ class Coordinator:
         chat_context = _CURRENT_CHAT_CONTEXT.get()
         if chat_context is not None:
             await self._publish_chat_progress(chat_context, agent_id, "running", f"{agent_id} started")
+        supervisor_tokens = set_supervisor_context(None, agent_id, chat_context)
         try:
             result = await self._run_subagent(agent_id, task, context_mode, attach_loop)
         except Exception:
             if chat_context is not None:
                 await self._publish_chat_progress(chat_context, agent_id, "failed", f"{agent_id} failed")
             raise
-        if chat_context is not None:
-            await self._publish_chat_progress(chat_context, agent_id, "completed", f"{agent_id} completed")
-        return result
+        else:
+            if chat_context is not None:
+                await self._publish_chat_progress(chat_context, agent_id, "completed", f"{agent_id} completed")
+            return result
+        finally:
+            reset_supervisor_context(supervisor_tokens)
 
     async def _run_subagent(
         self,

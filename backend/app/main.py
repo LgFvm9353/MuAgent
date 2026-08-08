@@ -7,10 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.capabilities import router as capabilities_router
-from app.api.confirmations import router as confirmations_router
 from app.api.conversations import router as conversations_router
 from app.api.memories import router as memories_router
 from app.api.tasks import router as tasks_router
+from app.api.supervisor import router as supervisor_router
 from app.config import get_settings
 from app.database import Database
 from app.logging import configure_logging
@@ -26,7 +26,9 @@ from app.tools.providers import McpToolProvider
 from app.tools.subagent import (
     AttachLoop,
     ContextMode,
+    SupervisorInbox,
     SubagentRunManager,
+    register_supervisor_tool,
     register_subagent_tool,
 )
 
@@ -57,10 +59,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             ),
         )
 
-    application.state.subagent_manager = SubagentRunManager(run_subagent)
+    application.state.supervisor_inbox = SupervisorInbox()
+    application.state.subagent_manager = SubagentRunManager(
+        run_subagent,
+        supervisor_inbox=application.state.supervisor_inbox,
+    )
     register_subagent_tool(
         application.state.tool_registry,
         application.state.subagent_manager,
+    )
+    register_supervisor_tool(
+        application.state.tool_registry,
+        application.state.supervisor_inbox,
     )
     mcp_config = load_mcp_config(BACKEND_ROOT / settings.mcp_config_path)
     application.state.mcp_manager = McpManager(
@@ -108,8 +118,8 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(tasks_router)
+app.include_router(supervisor_router)
 app.include_router(conversations_router)
-app.include_router(confirmations_router)
 app.include_router(capabilities_router)
 app.include_router(memories_router)
 
