@@ -36,3 +36,13 @@ export function deriveAgentWorkspace(task: Task, events: TaskEvent[], messages: 
   applyTaskFallback(state, latest?.to_state ? { ...task, state: latest.to_state, updated_at: latest.created_at } : task)
   return state
 }
+
+/** Chat turns have no Task record, but still publish specialist lifecycle messages. */
+export function deriveConversationAgentWorkspace(messages: ConversationMessage[]): AgentWorkspaceState {
+  const state = copyInitialState()
+  const orderedMessages = [...messages]
+    .filter((message) => message.message_type === 'collaboration')
+    .sort((left, right) => apiDateTimestamp(left.created_at) - apiDateTimestamp(right.created_at) || left.id - right.id)
+  for (const message of orderedMessages) applyMessage(state, message)
+  return state
+}

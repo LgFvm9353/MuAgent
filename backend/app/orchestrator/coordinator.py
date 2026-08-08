@@ -4,7 +4,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import anthropic
 import httpx
@@ -54,6 +54,7 @@ from app.workspace.task_directory import (
 
 _CURRENT_AGENT_LOOP: ContextVar[AgentLoop | None] = ContextVar("current_agent_loop", default=None)
 _SUBAGENT_DEPTH: ContextVar[int] = ContextVar("subagent_depth", default=0)
+_CURRENT_CHAT_CONTEXT: ContextVar[tuple[UUID, UUID] | None] = ContextVar("current_chat_context", default=None)
 _MAX_SUBAGENT_DEPTH = 3
 
 
@@ -130,6 +131,26 @@ class Coordinator:
         context_mode: ContextMode,
         attach_loop: AttachLoop,
     ) -> dict[str, Any]:
+        chat_context = _CURRENT_CHAT_CONTEXT.get()
+        if chat_context is not None:
+            await self._publish_chat_progress(chat_context, agent_id, "running", f"{agent_id} started")
+        try:
+            result = await self._run_subagent(agent_id, task, context_mode, attach_loop)
+        except Exception:
+            if chat_context is not None:
+                await self._publish_chat_progress(chat_context, agent_id, "failed", f"{agent_id} failed")
+            raise
+        if chat_context is not None:
+            await self._publish_chat_progress(chat_context, agent_id, "completed", f"{agent_id} completed")
+        return result
+
+    async def _run_subagent(
+        self,
+        agent_id: str,
+        task: str,
+        context_mode: ContextMode,
+        attach_loop: AttachLoop,
+    ) -> dict[str, Any]:
         """Execute a child as an independent AgentLoop and return a normal tool result."""
         depth = _SUBAGENT_DEPTH.get()
         if depth >= _MAX_SUBAGENT_DEPTH:
@@ -179,6 +200,26 @@ class Coordinator:
             "turns": completed.turns,
             "tool_calls": completed.tool_calls,
         }
+
+    async def _publish_chat_progress(
+        self,
+        context: tuple[UUID, UUID],
+        agent_id: str,
+        status: str,
+        summary: str,
+    ) -> None:
+        conversation_id, turn_id = context
+        await self._conversation_store.append(
+            conversation_id,
+            turn_id=turn_id,
+            agent_id=agent_id,
+            role="agent",
+            message_type="collaboration",
+            phase="specialist",
+            summary=summary,
+            content={"status": status, "text": summary},
+            source_id=f"chat-progress:{turn_id}:{agent_id}:{status}:{uuid4()}",
+        )
 
     @property
     def agent_registry(self) -> AgentRegistry:
@@ -343,11 +384,13 @@ class Coordinator:
                         ),
                     )
                     loop_token = _CURRENT_AGENT_LOOP.set(loop)
+                    chat_context_token = _CURRENT_CHAT_CONTEXT.set((conversation_id, turn_id))
                     try:
                         loop_result = await loop.prompt(
                             json.dumps(context, ensure_ascii=False, sort_keys=True)
                         )
                     finally:
+                        _CURRENT_CHAT_CONTEXT.reset(chat_context_token)
                         _CURRENT_AGENT_LOOP.reset(loop_token)
                     if loop_result.usage is None:
                         raise RuntimeError("agent loop returned no model usage")

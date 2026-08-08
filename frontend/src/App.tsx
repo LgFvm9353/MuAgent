@@ -1,5 +1,6 @@
 import { Bot, Menu, Plus, Wifi, WifiOff } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AgentWorkingIndicator } from './components/AgentWorkspace'
 import { CollaborationDetails } from './components/CollaborationDetails'
 import { Conversation } from './components/Conversation'
 import { ConversationSidebar } from './components/ConversationSidebar'
@@ -21,7 +22,7 @@ import {
   listConversations,
   sendConversationMessage,
 } from './lib/api'
-import { deriveAgentWorkspace } from './lib/agentWorkspace'
+import { deriveAgentWorkspace, deriveConversationAgentWorkspace } from './lib/agentWorkspace'
 import { conversationToMessage } from './lib/messages'
 import type {
   ChatMessage,
@@ -32,6 +33,8 @@ import type {
   TaskEvent,
   TaskResult,
   TaskState,
+  WorkspaceAgentId,
+  WorkspaceAgentStatus,
 } from './types/api'
 
 const terminal = new Set<TaskState>(['NEEDS_REVIEW', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'REJECTED', 'BUDGET_EXCEEDED'])
@@ -49,6 +52,7 @@ function Workbench() {
   const [conversation, setConversation] = useState<ConversationMessage[]>([])
   const [confirmations, setConfirmations] = useState<PendingConfirmation[]>([])
   const [result, setResult] = useState<TaskResult | null>(null)
+  const [optimisticWorkingAgents, setOptimisticWorkingAgents] = useState<Array<{ id: WorkspaceAgentId; status: WorkspaceAgentStatus }>>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -82,6 +86,7 @@ function Workbench() {
     setConversation([])
     setConfirmations([])
     setResult(null)
+    setOptimisticWorkingAgents([])
     setError(null)
     setLoading(true)
     setSidebarOpen(false)
@@ -166,6 +171,10 @@ function Workbench() {
 
   const updateMessage = useCallback((message: ConversationMessage) => {
     setConversation((items) => items.some((item) => item.id === message.id) ? items : [...items, message])
+    if (message.phase === 'root' && ['agent_message', 'agent_error'].includes(message.message_type)) {
+      setOptimisticWorkingAgents((items) => items.map((item) => ({ ...item, status: message.message_type === 'agent_error' ? 'failed' : 'completed' })))
+      window.setTimeout(() => setOptimisticWorkingAgents([]), 3500)
+    }
   }, [])
 
   const conversationStreamStatus = useConversationStream({
@@ -198,20 +207,28 @@ function Workbench() {
   )
   const agentWorkspace = useMemo(
     () => activeTask
-      ? deriveAgentWorkspace(
-          activeTask,
-          events,
-          conversation.filter((message) => message.task_id === activeTask.id),
-        )
-      : null,
+      ? deriveAgentWorkspace(activeTask, events, conversation.filter((message) => message.task_id === activeTask.id))
+      : deriveConversationAgentWorkspace(conversation),
     [activeTask, conversation, events],
   )
 
   const running = Boolean(activeTask && !terminal.has(activeTask.state))
+  const progressAgents = useMemo<Array<{ id: WorkspaceAgentId; status: WorkspaceAgentStatus }>>(() => {
+    if (activeTask && agentWorkspace && !terminal.has(activeTask.state)) return Object.values(agentWorkspace).filter((agent) => agent.status !== 'idle').map((agent) => ({ id: agent.id, status: agent.status }))
+    if (activeTask || optimisticWorkingAgents.length === 0) return []
+    const observed = new Map(Object.values(agentWorkspace).filter((agent) => agent.status !== 'idle').map((agent) => [agent.id, agent.status]))
+    return optimisticWorkingAgents.map((agent) => ({
+      ...agent,
+      status: observed.get(agent.id) === 'completed' || observed.get(agent.id) === 'failed' ? observed.get(agent.id)! : agent.status,
+    }))
+  }, [activeTask, agentWorkspace, optimisticWorkingAgents])
 
   const submit = async (goal: string) => {
     if (!selected) return false
     setBusy(true)
+    const mentioned = Array.from(goal.matchAll(/(?:^|\s)@(scout|researcher|planner|worker|reviewer|context-builder|oracle|delegate)(?=\s|$)/g), (match) => match[1] as WorkspaceAgentId)
+    const selectedAgents: WorkspaceAgentId[] = mentioned.length > 0 ? mentioned : ['delegate']
+    setOptimisticWorkingAgents(selectedAgents.map((id) => ({ id, status: 'running' })))
     try {
       const turn = await sendConversationMessage(selected.id, goal)
       const thread = await getConversation(selected.id)
@@ -227,6 +244,9 @@ function Workbench() {
       setResult(null)
       const messages = await getConversationMessages(selected.id)
       setConversation(messages)
+      if (!turn.task_id && (turn.state === 'completed' || turn.state === 'failed' || messages.some((message) => message.turn_id === turn.turn_id && message.phase === 'root'))) {
+        setOptimisticWorkingAgents([])
+      }
       show({
         tone: turn.state === 'escalated' ? 'warning' : 'success',
         title: turn.state === 'escalated' ? '需要受控执行' : '消息已发送',
@@ -243,6 +263,7 @@ function Workbench() {
       }
       return true
     } catch (cause) {
+      setOptimisticWorkingAgents([])
       show({ tone: 'error', title: '发送失败', description: errorText(cause) })
       return false
     } finally {
@@ -261,6 +282,7 @@ function Workbench() {
       setConversation([])
       setConfirmations([])
       setResult(null)
+      setOptimisticWorkingAgents([])
       setError(null)
       setSidebarOpen(false)
     } catch (cause) {
@@ -304,8 +326,8 @@ function Workbench() {
         <div className="flex items-center gap-3"><button className="icon-button lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="打开对话列表"><Menu size={19}/></button><div className="brand-mark"><Bot size={19}/></div><div><h1>Agent Console</h1><p>多 Agent 持续对话工作台</p></div></div>
         <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()}><Plus size={15}/>新建对话</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : conversationStreamStatus === 'reconnecting' || taskStreamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
       </header>
-      {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div><div className="flex items-center gap-2">{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div></div>}
-      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{activeTask && agentWorkspace && <CollaborationDetails task={activeTask} agents={agentWorkspace} events={events} result={result}/>}</section>
+      {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div><div className="flex items-center gap-2"><AgentWorkingIndicator agents={agentWorkspace}/>{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div></div>}
+      <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} progressAgents={progressAgents} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{activeTask && agentWorkspace && <CollaborationDetails task={activeTask} agents={agentWorkspace} events={events} result={result}/>}</section>
       {confirmations.length > 0 && <section className="confirmation-panel">{confirmations.map((confirmation) => <article className="confirmation-card" key={confirmation.call_hash}><div><strong>Executor 请求人工确认</strong><p>{confirmation.tool_name} · {confirmation.risk}</p><p>{confirmation.impact}</p><details><summary>查看工具参数</summary><pre>{JSON.stringify(confirmation.arguments, null, 2)}</pre></details></div><div className="confirmation-actions"><button className="secondary-button" disabled={busy} onClick={() => void decide(confirmation, false)}>拒绝</button><button className="primary-button" disabled={busy} onClick={() => void decide(confirmation, true)}>批准</button></div></article>)}</section>}
       {selected ? <TaskComposer busy={busy} running={running} onSubmit={submit} onCancel={cancel}/> : <div className="p-6 text-center text-sm text-zinc-500">请先新建一个对话。</div>}
     </main>

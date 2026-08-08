@@ -65,3 +65,13 @@ export function AgentWorkspace({ agents, compact = false }: { agents: AgentWorks
     <div className="agent-workspace-flow">{values.map((agent) => <AgentCard key={agent.id} agent={agent} now={now}/>)}</div>
   </section>
 }
+
+export function AgentWorkingIndicator({ agents }: { agents: AgentWorkspaceState }) {
+  const running = Object.values(agents).filter((agent) => agent.status === 'running')
+  if (running.length === 0) return null
+  const names = running.map((agent) => metadata[agent.id]?.name || agent.id)
+  return <div className="agent-working-indicator" role="status" aria-live="polite">
+    <LoaderCircle size={14} className="agent-status-spinner" aria-hidden="true" />
+    <span>正在工作：{names.join('、')}</span>
+  </div>
+}
