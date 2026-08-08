@@ -1,19 +1,34 @@
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
 
 from app.agent_loop import ModelTurnProvider
-from app.contracts.agents import AgentBrief, VerificationReport
+from app.contracts.agents import VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
 from app.harness.context import ContextBuilder
-from app.harness.model_gateway import ModelResult
+from app.harness.model_gateway import ModelResult, ModelUsage
 from app.harness.registry import AgentRegistry
-from app.orchestrator.scheduler import AgentInvocation
 from app.tools.registry import ToolRegistry
+
+
+@dataclass(frozen=True, slots=True)
+class AgentInvocation:
+    """Persistable record of one structured model invocation."""
+
+    agent_id: str
+    output: dict[str, Any]
+    usage: ModelUsage
+    source_id: str
+    phase: str
+    message_type: str
+
+
+CollaborationSink = Callable[[AgentInvocation], Awaitable[None]]
 
 
 class StructuredGateway(Protocol):
@@ -51,32 +66,15 @@ class AgentRuntime:
         self._invocations.clear()
         return invocations
 
-    async def specialist(
-        self, agent_id: str, task: TaskContract, role_context: dict[str, Any] | None = None
-    ) -> AgentBrief:
-        return cast(
-            AgentBrief,
-            await self._call(
-                agent_id,
-                "specialist",
-                self._context.specialist(task, agent_id, role_context),
-                AgentBrief,
-            ),
-        )
-
     async def planner(
         self,
         task: TaskContract,
-        briefs: tuple[AgentBrief, ...],
         workspace_files: frozenset[str] = frozenset(),
-        specialist_failures: tuple[str, ...] = (),
     ) -> ExecutionPlan:
         context = self._context.planner(
             task,
-            tuple(brief.model_dump(mode="json") for brief in briefs),
             self._tools.catalog(task.allowed_tools),
             workspace_files,
-            specialist_failures,
         )
         return cast(
             ExecutionPlan,
@@ -128,9 +126,8 @@ class AgentRuntime:
         self,
         agent_id: str,
         phase: str,
-        context: dict[str, Any] | type[AgentBrief] | type[ExecutionPlan] | type[VerificationReport],
-        output_model: type[AgentBrief]
-        | type[ExecutionPlan]
+        context: dict[str, Any] | type[ExecutionPlan] | type[VerificationReport],
+        output_model: type[ExecutionPlan]
         | type[VerificationReport]
         | None = None,
     ) -> object:

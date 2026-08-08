@@ -5,8 +5,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agents.runtime import AgentInvocation
 from app.models import ConversationMessage, Task
-from app.orchestrator.scheduler import AgentInvocation
 
 ConversationSink = Callable[[AgentInvocation], Awaitable[None]]
 

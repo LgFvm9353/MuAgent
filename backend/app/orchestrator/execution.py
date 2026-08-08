@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agents.runtime import AgentRuntime
 from app.config import Settings
 from app.contracts.execution import ExecutionPlan, ExecutionStep
 from app.contracts.task import TaskContract
@@ -24,7 +25,6 @@ from app.models import (
     UsageRecord,
     VerificationReportModel,
 )
-from app.orchestrator.scheduler import AgentRuntime
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
 from app.services.final_summary import FinalSummaryService

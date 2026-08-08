@@ -69,36 +69,14 @@ class AgentContextBuilder:
 
 
 class ContextBuilder:
-    def specialist(
-        self,
-        task: TaskContract,
-        agent_id: str,
-        role_context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        role_context = role_context or {}
-        return {
-            "task": task.model_dump(mode="json"),
-            "agent_id": agent_id,
-            "role_context": role_context,
-            "workspace": {"files": role_context.get("workspace_files", [])},
-            "instruction": (
-                "Work independently from this immutable task snapshot and do not claim "
-                "actions you did not perform."
-            ),
-        }
-
     def planner(
         self,
         task: TaskContract,
-        briefs: tuple[dict[str, Any], ...],
         tool_catalog: tuple[dict[str, Any], ...],
         workspace_files: frozenset[str] = frozenset(),
-        specialist_failures: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         return {
             "task": task.model_dump(mode="json"),
-            "child_briefs": briefs,
-            "specialist_failures": list(specialist_failures),
             "tool_catalog": tool_catalog,
             "workspace": {
                 "empty": not workspace_files,

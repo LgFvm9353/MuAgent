@@ -33,7 +33,6 @@ from app.harness.structured_tools import (
 from app.logging import logger
 from app.models import AgentRun
 from app.orchestrator.execution import ExecutionService
-from app.orchestrator.scheduler import SpecialistQuorumError
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskNotFoundError, TaskRepository
@@ -555,8 +554,6 @@ class Coordinator:
                 runtime,
                 self._agents,
                 tools,
-                conversation_sink,
-                max_specialists=self._settings.collaboration_max_agents,
             )
             executor = ExecutionService(
                 self._sessions,
@@ -589,15 +586,6 @@ class Coordinator:
                     raise RuntimeError(f"orchestrator made no state progress: {state}")
                 if transitions > max_transitions:
                     raise RuntimeError("orchestrator exceeded the bounded state loop")
-        except SpecialistQuorumError as error:
-            error_code, message = safe_error_summary(error)
-            logger().warning("specialist quorum was not reached", error_code=error_code)
-            await self._finish(
-                task_id,
-                TaskState.NEEDS_REVIEW,
-                error_code,
-                details={"error_code": error_code, "message": message},
-            )
         except WorkspacePreconditionError as error:
             error_code, message = safe_error_summary(error)
             logger().warning("task needs workspace review", error_code=error_code)

@@ -23,7 +23,7 @@ import {
   sendConversationMessage,
 } from './lib/api'
 import { deriveAgentWorkspace, deriveConversationAgentWorkspace } from './lib/agentWorkspace'
-import { conversationToMessage } from './lib/messages'
+import { compareChatMessages, conversationToMessage } from './lib/messages'
 import type {
   ChatMessage,
   ConversationMessage,
@@ -186,9 +186,24 @@ function Workbench() {
     }
   }, [])
 
+  // Message delivery can come from two SSE streams, so the React array is
+  // not guaranteed to be append-ordered. Use the largest server cursor when
+  // reconnecting instead of assuming the last array item is the newest one.
+  const latestConversationMessageId = useMemo(
+    () => conversation.reduce((latest, message) => Math.max(latest, message.id), 0),
+    [conversation],
+  )
+  const latestTaskMessageId = useMemo(
+    () => conversation.reduce(
+      (latest, message) => message.task_id === activeTask?.id ? Math.max(latest, message.id) : latest,
+      0,
+    ),
+    [activeTask?.id, conversation],
+  )
+
   const conversationStreamStatus = useConversationStream({
     conversationId: selected?.id || null,
-    after: conversation.at(-1)?.id || 0,
+    after: latestConversationMessageId,
     active: Boolean(selected && !loading),
     onMessage: updateMessage,
     onWarning: () => show({
@@ -201,8 +216,8 @@ function Workbench() {
 
   const taskStreamStatus = useTaskStream({
     taskId: activeTask?.id || null,
-    after: events.at(-1)?.id || 0,
-    messageAfter: conversation.filter((message) => message.task_id === activeTask?.id).at(-1)?.id || 0,
+    after: events.reduce((latest, event) => Math.max(latest, event.id), 0),
+    messageAfter: latestTaskMessageId,
     active: Boolean(activeTask && !terminal.has(activeTask.state) && !loading),
     onEvent: updateEvent,
     onMessage: updateMessage,
@@ -224,7 +239,7 @@ function Workbench() {
         supervisorRequest: request,
       }))
       return [...conversation.map(conversationToMessage), ...inlineRequests]
-        .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+        .sort(compareChatMessages)
     },
     [conversation, supervisorRequests],
   )

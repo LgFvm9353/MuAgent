@@ -3,7 +3,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from app.config import AgentId, Settings
-from app.contracts.agents import AgentBrief, VerificationReport
+from app.contracts.agents import ChatAgentReply, VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.harness.registry import AgentDefinition, AgentRegistry
 
@@ -36,7 +36,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             # v3 aligns the role prompts with the pi-subagents builtin contracts.
             prompt_version="v3",
             schema_version="v2",
-            output_model=AgentBrief,
+            output_model=ChatAgentReply,
             allowed_tools=allowed_tools | supervisor_tools,
             timeout_seconds=settings.model_timeout_seconds,
             max_retries=2,

@@ -3,6 +3,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agents.runtime import AgentRuntime
 from app.contracts.agents import VerificationReport
 from app.contracts.execution import ExecutionPlan
 from app.contracts.task import TaskContract
@@ -14,11 +15,9 @@ from app.models import (
     EvidenceRecordModel,
     ExecutionPlanRecord,
     ExecutionStepRecord,
-    Proposal,
     UsageRecord,
     VerificationReportModel,
 )
-from app.orchestrator.scheduler import AgentRuntime, CollaborationSink, Scheduler
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskRepository
 from app.tools.registry import ToolRegistry
@@ -31,18 +30,11 @@ class OrchestratorService:
         runtime: AgentRuntime,
         agents: AgentRegistry,
         tools: ToolRegistry,
-        collaboration_sink: CollaborationSink | None = None,
-        max_specialists: int = 8,
     ) -> None:
         self._sessions = sessions
         self._runtime = runtime
         self._agents = agents
         self._tools = tools
-        self._scheduler = Scheduler(
-            runtime,
-            collaboration_sink,
-            max_specialists=max_specialists,
-        )
 
     async def run(
         self,
@@ -68,11 +60,15 @@ class OrchestratorService:
                 TaskState.ANALYZING,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason="starting parallel analysis",
+                reason="starting single-agent planning",
             )
             await session.commit()
 
-        result = await self._scheduler.deliberate(contract, workspace_files)
+        # Task orchestration no longer fans out project-specific specialist
+        # agents. Parallel child-agent work is provided by the pi-subagents
+        # compatible ``subagent`` tool used by the Supervisor. The task path
+        # asks the planner for one bounded plan directly.
+        plan_model = await self._runtime.planner(contract, workspace_files)
 
         async with self._sessions() as session:
             repository = TaskRepository(session)
@@ -122,15 +118,6 @@ class OrchestratorService:
                         estimated_cost_usd=estimated_cost,
                     )
                 )
-                if invocation.phase in {"specialist", "specialist_completed"}:
-                    session.add(
-                        Proposal(
-                            task_id=task_id,
-                            agent_run_id=run.id,
-                            version=1,
-                            content=invocation.output,
-                        )
-                    )
             if (
                 total_tokens > contract.budget.max_tokens
                 or total_cost > contract.budget.max_cost_usd
@@ -154,22 +141,22 @@ class OrchestratorService:
             await session.flush()
             task = await repository.get(task_id, for_update=True)
             validate_plan(
-                result.plan,
+                plan_model,
                 contract,
                 self._tools,
                 workspace_files=workspace_files,
             )
-            plan = ExecutionPlanRecord(
-                id=result.plan.plan_id,
+            plan_record = ExecutionPlanRecord(
+                id=plan_model.plan_id,
                 task_id=task_id,
-                version=result.plan.version,
-                content=result.plan.model_dump(mode="json"),
+                version=plan_model.version,
+                content=plan_model.model_dump(mode="json"),
             )
-            session.add(plan)
-            for step in result.plan.steps:
+            session.add(plan_record)
+            for step in plan_model.steps:
                 session.add(
                     ExecutionStepRecord(
-                        plan_id=plan.id,
+                        plan_id=plan_record.id,
                         step_key=step.step_id,
                         status="pending",
                         content=step.model_dump(mode="json"),
