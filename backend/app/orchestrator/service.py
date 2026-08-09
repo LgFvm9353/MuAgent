@@ -60,15 +60,14 @@ class OrchestratorService:
                 TaskState.ANALYZING,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason="starting single-agent planning",
+                reason="starting Supervisor decomposition",
             )
             await session.commit()
 
-        # Task orchestration no longer fans out project-specific specialist
-        # agents. Parallel child-agent work is provided by the pi-subagents
-        # compatible ``subagent`` tool used by the Supervisor. The task path
-        # asks the planner for one bounded plan directly.
-        plan_model = await self._runtime.planner(contract, workspace_files)
+        # All model-driven task decisions are owned by the Supervisor. It may
+        # call Planner/Worker/Reviewer profiles through ``subagent`` when
+        # useful, but there is no fixed Planner -> Worker -> Reviewer chain.
+        plan_model = await self._runtime.supervisor_plan(contract, workspace_files)
 
         async with self._sessions() as session:
             repository = TaskRepository(session)
@@ -136,7 +135,7 @@ class OrchestratorService:
                 TaskState.PLANNING,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason="analysis completed",
+                reason="Supervisor decomposition completed",
             )
             await session.flush()
             task = await repository.get(task_id, for_update=True)
@@ -176,7 +175,9 @@ class OrchestratorService:
                 TaskState.EXECUTING,
                 expected_version=task.version,
                 trace_id=task.trace_id,
-                reason="execution plan accepted; supervisor decisions are requested by agents when needed",
+                reason=(
+                    "execution plan accepted; Supervisor owns specialist decisions"
+                ),
             )
             await session.commit()
 
@@ -232,7 +233,7 @@ class OrchestratorService:
             evidence = tuple(record.content for record in evidence_records)
             next_version = current_plan.version + 1
 
-        new_plan = await self._runtime.replanner(
+        new_plan = await self._runtime.supervisor_replan(
             contract,
             prior_plan,
             verification,

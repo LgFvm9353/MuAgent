@@ -115,7 +115,7 @@ class ExecutionService:
             for step in plan.steps
         )
         artifacts = collect_text_artifacts(self._workspace_root)
-        report = await self._runtime.verifier(
+        report = await self._runtime.supervisor_verify(
             contract,
             plan,
             execution_records,

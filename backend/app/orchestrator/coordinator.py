@@ -48,6 +48,8 @@ from app.tools.registry import ToolRegistry
 from app.tools.subagent import (
     AttachLoop,
     ContextMode,
+    SubagentRunManager,
+    register_subagent_tool,
     reset_supervisor_context,
     set_supervisor_context,
 )
@@ -58,7 +60,9 @@ from app.workspace.task_directory import (
 
 _CURRENT_AGENT_LOOP: ContextVar[AgentLoop | None] = ContextVar("current_agent_loop", default=None)
 _SUBAGENT_DEPTH: ContextVar[int] = ContextVar("subagent_depth", default=0)
-_CURRENT_CHAT_CONTEXT: ContextVar[tuple[UUID, UUID] | None] = ContextVar("current_chat_context", default=None)
+_CURRENT_CHAT_CONTEXT: ContextVar[tuple[UUID, UUID] | None] = ContextVar(
+    "current_chat_context", default=None
+)
 _MAX_SUBAGENT_DEPTH = 3
 
 
@@ -134,20 +138,34 @@ class Coordinator:
         task: str,
         context_mode: ContextMode,
         attach_loop: AttachLoop,
+        *,
+        tool_registry: ToolRegistry | None = None,
     ) -> dict[str, Any]:
         chat_context = _CURRENT_CHAT_CONTEXT.get()
         if chat_context is not None:
-            await self._publish_chat_progress(chat_context, agent_id, "running", f"{agent_id} started")
+            await self._publish_chat_progress(
+                chat_context, agent_id, "running", f"{agent_id} started"
+            )
         supervisor_tokens = set_supervisor_context(None, agent_id, chat_context)
         try:
-            result = await self._run_subagent(agent_id, task, context_mode, attach_loop)
+            result = await self._run_subagent(
+                agent_id,
+                task,
+                context_mode,
+                attach_loop,
+                tool_registry=tool_registry,
+            )
         except Exception:
             if chat_context is not None:
-                await self._publish_chat_progress(chat_context, agent_id, "failed", f"{agent_id} failed")
+                await self._publish_chat_progress(
+                    chat_context, agent_id, "failed", f"{agent_id} failed"
+                )
             raise
         else:
             if chat_context is not None:
-                await self._publish_chat_progress(chat_context, agent_id, "completed", f"{agent_id} completed")
+                await self._publish_chat_progress(
+                    chat_context, agent_id, "completed", f"{agent_id} completed"
+                )
             return result
         finally:
             reset_supervisor_context(supervisor_tokens)
@@ -158,6 +176,8 @@ class Coordinator:
         task: str,
         context_mode: ContextMode,
         attach_loop: AttachLoop,
+        *,
+        tool_registry: ToolRegistry | None = None,
     ) -> dict[str, Any]:
         """Execute a child as an independent AgentLoop and return a normal tool result."""
         depth = _SUBAGENT_DEPTH.get()
@@ -165,7 +185,7 @@ class Coordinator:
             raise RuntimeError("subagent_depth_exceeded")
         definition = self._agents.get(agent_id)
         binding = bind_agent_tools(
-            self._chat_tools,
+            tool_registry or self._chat_tools,
             definition,
             ToolContext(),
             max_calls=self._settings.collaboration_max_tool_calls_per_agent,
@@ -531,6 +551,7 @@ class Coordinator:
 
     async def _run(self, task_id: UUID) -> None:
         trace_id = await self._trace_id(task_id)
+        task_subagents: SubagentRunManager | None = None
         clear_contextvars()
         bind_contextvars(task_id=str(task_id), trace_id=str(trace_id))
         try:
@@ -542,6 +563,23 @@ class Coordinator:
                 if path.is_file() and not path.is_symlink()
             )
             tools = build_tool_registry(self._settings, workspace_root)
+
+            async def run_task_subagent(
+                agent: str,
+                child_task: str,
+                context: ContextMode,
+                attach_loop: AttachLoop,
+            ) -> dict[str, Any]:
+                return await self.run_subagent(
+                    agent,
+                    child_task,
+                    context,
+                    attach_loop,
+                    tool_registry=tools,
+                )
+
+            task_subagents = SubagentRunManager(run_task_subagent)
+            register_subagent_tool(tools, task_subagents)
             conversation_sink = ConversationService(self._sessions).sink(task_id)
             runtime = AgentRuntime(
                 self._gateway,
@@ -612,6 +650,8 @@ class Coordinator:
                 details={"error_code": error_code, "message": message},
             )
         finally:
+            if task_subagents is not None:
+                await task_subagents.close()
             clear_contextvars()
 
     async def _contract(self, task_id: UUID) -> TaskContract:

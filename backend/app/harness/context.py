@@ -69,12 +69,19 @@ class AgentContextBuilder:
 
 
 class ContextBuilder:
-    def planner(
+    def decomposition(
         self,
         task: TaskContract,
         tool_catalog: tuple[dict[str, Any], ...],
         workspace_files: frozenset[str] = frozenset(),
+        available_agents: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
+        """Build the Supervisor input for task decomposition.
+
+        Agent selection is owned by the Supervisor.  The task path must not
+        encode a Planner -> Worker -> Reviewer chain; the Supervisor may use
+        those profiles through the ``subagent`` tool when useful.
+        """
         return {
             "task": task.model_dump(mode="json"),
             "tool_catalog": tool_catalog,
@@ -82,6 +89,54 @@ class ContextBuilder:
                 "empty": not workspace_files,
                 "files": sorted(workspace_files),
             },
+            "available_agents": available_agents,
+            "instruction": (
+                "Decompose this task as the root supervisor. Delegate bounded work through the "
+                "subagent tool when specialist input is useful, then return one executable plan. "
+                "Do not assume a fixed planner-worker-review sequence."
+            ),
+        }
+
+    def planner(
+        self,
+        task: TaskContract,
+        tool_catalog: tuple[dict[str, Any], ...],
+        workspace_files: frozenset[str] = frozenset(),
+    ) -> dict[str, Any]:
+        # Backward-compatible context helper for callers outside the
+        # orchestrator. New orchestration uses ``decomposition``.
+        return {
+            "task": task.model_dump(mode="json"),
+            "tool_catalog": tool_catalog,
+            "workspace": {
+                "empty": not workspace_files,
+                "files": sorted(workspace_files),
+            },
+        }
+
+    def replanning(
+        self,
+        task: TaskContract,
+        prior_plan: dict[str, Any],
+        verification: dict[str, Any],
+        evidence: tuple[dict[str, Any], ...],
+        tool_catalog: tuple[dict[str, Any], ...],
+        workspace_files: frozenset[str],
+        available_agents: tuple[dict[str, Any], ...] = (),
+    ) -> dict[str, Any]:
+        return {
+            "task": task.model_dump(mode="json"),
+            "prior_plan": prior_plan,
+            "verification_failure": verification,
+            "evidence": evidence,
+            "tool_catalog": tool_catalog,
+            "workspace": {"files": sorted(workspace_files)},
+            "available_agents": available_agents,
+            "instruction": (
+                "As the root supervisor, delegate only the bounded work needed to address verified "
+                "failures, then return a revised executable plan. Preserve successful work and do "
+                "not reintroduce a fixed planner-worker-review chain."
+            ),
         }
 
     def replanner(
@@ -93,6 +148,8 @@ class ContextBuilder:
         tool_catalog: tuple[dict[str, Any], ...],
         workspace_files: frozenset[str],
     ) -> dict[str, Any]:
+        # Backward-compatible context helper. New orchestration uses
+        # ``replanning`` under Supervisor control.
         return {
             "task": task.model_dump(mode="json"),
             "prior_plan": prior_plan,
@@ -107,6 +164,29 @@ class ContextBuilder:
             ),
         }
 
+    def verification(
+        self,
+        task: TaskContract,
+        plan: dict[str, Any],
+        execution: tuple[dict[str, Any], ...],
+        evidence: tuple[dict[str, Any], ...],
+        artifacts: tuple[dict[str, Any], ...] = (),
+    ) -> dict[str, Any]:
+        return {
+            "acceptance_criteria": [
+                item.model_dump(mode="json") for item in task.acceptance_criteria
+            ],
+            "approved_plan": plan,
+            "execution_records": execution,
+            "evidence": evidence,
+            "final_artifacts": artifacts,
+            "instruction": (
+                "As the root supervisor, judge the task only from acceptance criteria and verified "
+                "evidence. Call a reviewer subagent when an independent semantic review is useful; "
+                "do not treat an executor claim as proof."
+            ),
+        }
+
     def verifier(
         self,
         task: TaskContract,
@@ -115,6 +195,8 @@ class ContextBuilder:
         evidence: tuple[dict[str, Any], ...],
         artifacts: tuple[dict[str, Any], ...] = (),
     ) -> dict[str, Any]:
+        # Backward-compatible context helper. New orchestration uses
+        # ``verification`` under Supervisor control.
         return {
             "acceptance_criteria": [
                 item.model_dump(mode="json") for item in task.acceptance_criteria
