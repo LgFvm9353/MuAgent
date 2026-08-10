@@ -7,19 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.config_defaults import (
     DEFAULT_ARTIFACTS_ROOT,
-    DEFAULT_COLLABORATION_CONFIRMATION_TTL_SECONDS,
-    DEFAULT_COLLABORATION_DEFAULT_MODE,
-    DEFAULT_COLLABORATION_DEFAULT_SYNTHESIZE,
-    DEFAULT_COLLABORATION_FIRST_EVENT_WARNING_SECONDS,
-    DEFAULT_COLLABORATION_IDLE_STALL_SECONDS,
-    DEFAULT_COLLABORATION_IDLE_WARNING_SECONDS,
-    DEFAULT_COLLABORATION_INACTIVITY_BUDGET_SECONDS,
-    DEFAULT_COLLABORATION_MAX_AGENTS,
     DEFAULT_COLLABORATION_MAX_TOOL_CALLS_PER_AGENT,
-    DEFAULT_COLLABORATION_MAX_TOOL_CALLS_PER_TURN,
     DEFAULT_COLLABORATION_MAX_TOOL_ROUNDS_PER_AGENT,
-    DEFAULT_COLLABORATION_SYNTHESIS_IDLE_STALL_SECONDS,
-    DEFAULT_COLLABORATION_TOOL_IDLE_STALL_SECONDS,
     DEFAULT_CONTEXT_COMPRESSION_TARGET,
     DEFAULT_CONTEXT_COMPRESSION_THRESHOLD,
     DEFAULT_CONTEXT_MODEL_MAX_OUTPUT_TOKENS,
@@ -56,7 +45,6 @@ from app.config_defaults import (
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     DEFAULT_WORKSPACE_ROOT,
 )
-from app.contracts.collaboration import ActivityTimeouts, CollaborationMode, CollaborationPolicy
 
 AgentId = Literal[
     "supervisor",
@@ -133,38 +121,11 @@ class Settings(BaseSettings):
     )
     tool_timeout_seconds: float = Field(default=DEFAULT_TOOL_TIMEOUT_SECONDS, gt=0)
     mention_execution_tools: str = DEFAULT_MENTION_EXECUTION_TOOLS
-    collaboration_default_mode: Literal["single", "parallel"] = DEFAULT_COLLABORATION_DEFAULT_MODE
-    collaboration_default_synthesize: bool = DEFAULT_COLLABORATION_DEFAULT_SYNTHESIZE
-    collaboration_max_agents: int = Field(default=DEFAULT_COLLABORATION_MAX_AGENTS, ge=2, le=8)
     collaboration_max_tool_rounds_per_agent: int = Field(
         default=DEFAULT_COLLABORATION_MAX_TOOL_ROUNDS_PER_AGENT, ge=0, le=20
     )
     collaboration_max_tool_calls_per_agent: int = Field(
         default=DEFAULT_COLLABORATION_MAX_TOOL_CALLS_PER_AGENT, ge=0, le=50
-    )
-    collaboration_max_tool_calls_per_turn: int = Field(
-        default=DEFAULT_COLLABORATION_MAX_TOOL_CALLS_PER_TURN, ge=0, le=100
-    )
-    collaboration_first_event_warning_seconds: float = Field(
-        default=DEFAULT_COLLABORATION_FIRST_EVENT_WARNING_SECONDS, gt=0
-    )
-    collaboration_idle_warning_seconds: float = Field(
-        default=DEFAULT_COLLABORATION_IDLE_WARNING_SECONDS, gt=0
-    )
-    collaboration_idle_stall_seconds: float = Field(
-        default=DEFAULT_COLLABORATION_IDLE_STALL_SECONDS, gt=0
-    )
-    collaboration_tool_idle_stall_seconds: float = Field(
-        default=DEFAULT_COLLABORATION_TOOL_IDLE_STALL_SECONDS, gt=0
-    )
-    collaboration_inactivity_budget_seconds: float = Field(
-        default=DEFAULT_COLLABORATION_INACTIVITY_BUDGET_SECONDS, gt=0
-    )
-    collaboration_synthesis_idle_stall_seconds: float = Field(
-        default=DEFAULT_COLLABORATION_SYNTHESIS_IDLE_STALL_SECONDS, gt=0
-    )
-    collaboration_confirmation_ttl_seconds: float = Field(
-        default=DEFAULT_COLLABORATION_CONFIRMATION_TTL_SECONDS, gt=0
     )
     skills_root: Path = Path(DEFAULT_SKILLS_ROOT)
     mcp_config_path: Path = Path(DEFAULT_MCP_CONFIG_PATH)
@@ -221,40 +182,8 @@ class Settings(BaseSettings):
             raise ValueError(f"unknown agent ID: {agent_id}")
         return self.model_name
 
-    @property
-    def collaboration_timeouts(self) -> ActivityTimeouts:
-        return ActivityTimeouts(
-            first_event_warning_seconds=self.collaboration_first_event_warning_seconds,
-            idle_warning_seconds=self.collaboration_idle_warning_seconds,
-            idle_stall_seconds=self.collaboration_idle_stall_seconds,
-            tool_idle_stall_seconds=self.collaboration_tool_idle_stall_seconds,
-            inactivity_budget_seconds=self.collaboration_inactivity_budget_seconds,
-            synthesis_idle_stall_seconds=self.collaboration_synthesis_idle_stall_seconds,
-            confirmation_ttl_seconds=self.collaboration_confirmation_ttl_seconds,
-        )
-
-    def collaboration_policy(
-        self,
-        mode: CollaborationMode | None = None,
-        *,
-        synthesize: bool | None = None,
-    ) -> CollaborationPolicy:
-        selected_mode = mode or CollaborationMode(self.collaboration_default_mode)
-        return CollaborationPolicy(
-            mode=selected_mode,
-            synthesize=self.collaboration_default_synthesize if synthesize is None else synthesize,
-            max_agents=self.collaboration_max_agents
-            if selected_mode is CollaborationMode.PARALLEL
-            else 1,
-            max_tool_rounds_per_agent=self.collaboration_max_tool_rounds_per_agent,
-            max_tool_calls_per_agent=self.collaboration_max_tool_calls_per_agent,
-            max_tool_calls_per_turn=self.collaboration_max_tool_calls_per_turn,
-        )
-
     @model_validator(mode="after")
     def validate_provider(self) -> "Settings":
-        _ = self.collaboration_timeouts
-        _ = self.collaboration_policy()
         if self.context_compression_target >= self.context_compression_threshold:
             raise ValueError("CONTEXT_COMPRESSION_TARGET must be below threshold")
         if self.llm_api_key is not None:

@@ -9,20 +9,6 @@ class ChatAgentReply(ContractModel):
     text: str = Field(min_length=1, max_length=20_000)
 
 
-class AgentBrief(ContractModel):
-    """Task-scoped result returned by capability-oriented child agents."""
-
-    summary: str = Field(min_length=1, max_length=5_000)
-    findings: tuple[str, ...] = ()
-    recommendations: tuple[str, ...] = ()
-    risks: tuple[str, ...] = ()
-    confidence: float = Field(ge=0, le=1)
-
-
-class ParallelSynthesisReply(ContractModel):
-    text: str = Field(min_length=1, max_length=20_000)
-
-
 class VerificationReport(ContractModel):
     verdict: Literal["passed", "failed", "needs_review"]
     criterion_results: dict[str, bool]

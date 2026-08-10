@@ -97,23 +97,6 @@ class ContextBuilder:
             ),
         }
 
-    def planner(
-        self,
-        task: TaskContract,
-        tool_catalog: tuple[dict[str, Any], ...],
-        workspace_files: frozenset[str] = frozenset(),
-    ) -> dict[str, Any]:
-        # Backward-compatible context helper for callers outside the
-        # orchestrator. New orchestration uses ``decomposition``.
-        return {
-            "task": task.model_dump(mode="json"),
-            "tool_catalog": tool_catalog,
-            "workspace": {
-                "empty": not workspace_files,
-                "files": sorted(workspace_files),
-            },
-        }
-
     def replanning(
         self,
         task: TaskContract,
@@ -139,31 +122,6 @@ class ContextBuilder:
             ),
         }
 
-    def replanner(
-        self,
-        task: TaskContract,
-        prior_plan: dict[str, Any],
-        verification: dict[str, Any],
-        evidence: tuple[dict[str, Any], ...],
-        tool_catalog: tuple[dict[str, Any], ...],
-        workspace_files: frozenset[str],
-    ) -> dict[str, Any]:
-        # Backward-compatible context helper. New orchestration uses
-        # ``replanning`` under Supervisor control.
-        return {
-            "task": task.model_dump(mode="json"),
-            "prior_plan": prior_plan,
-            "verification_failure": verification,
-            "evidence": evidence,
-            "tool_catalog": tool_catalog,
-            "workspace": {"files": sorted(workspace_files)},
-            "instruction": (
-                "Change only steps required to address verified failures. "
-                "Modify existing files instead of creating them again, "
-                "then rerun the failed checks."
-            ),
-        }
-
     def verification(
         self,
         task: TaskContract,
@@ -185,24 +143,4 @@ class ContextBuilder:
                 "evidence. Call a reviewer subagent when an independent semantic review is useful; "
                 "do not treat an executor claim as proof."
             ),
-        }
-
-    def verifier(
-        self,
-        task: TaskContract,
-        plan: dict[str, Any],
-        execution: tuple[dict[str, Any], ...],
-        evidence: tuple[dict[str, Any], ...],
-        artifacts: tuple[dict[str, Any], ...] = (),
-    ) -> dict[str, Any]:
-        # Backward-compatible context helper. New orchestration uses
-        # ``verification`` under Supervisor control.
-        return {
-            "acceptance_criteria": [
-                item.model_dump(mode="json") for item in task.acceptance_criteria
-            ],
-            "approved_plan": plan,
-            "execution_records": execution,
-            "evidence": evidence,
-            "final_artifacts": artifacts,
         }
