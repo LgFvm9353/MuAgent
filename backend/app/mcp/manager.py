@@ -3,6 +3,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.config_defaults import PROVIDER_REQUEST_TIMEOUT_SECONDS
 from app.mcp.contracts import McpConfig, McpServerConfig
 from app.mcp.transport import McpConnection, McpConnector, RemoteTool, RemoteToolResult
 
@@ -38,7 +39,7 @@ class McpManager:
             await self._ensure_connected(state)
             if state.tools is None:
                 assert state.connection is not None
-                discovered = await state.connection.list_tools()
+                discovered = await self._list_tools(state.connection)
                 state.tools = {
                     tool.name: tool
                     for tool in discovered
@@ -60,14 +61,14 @@ class McpManager:
             await self._ensure_connected(state)
             if state.tools is None:
                 assert state.connection is not None
-                discovered = await state.connection.list_tools()
+                discovered = await self._list_tools(state.connection)
                 state.tools = {tool.name: tool for tool in discovered}
             if tool_name not in state.tools:
                 raise McpToolUnavailableError(
                     f"MCP tool was not discovered: {server_id}.{tool_name}"
                 )
             assert state.connection is not None
-            timeout = policy.timeout_seconds or 60.0
+            timeout = policy.timeout_seconds or PROVIDER_REQUEST_TIMEOUT_SECONDS
             async with asyncio.timeout(timeout):
                 return await state.connection.call_tool(tool_name, arguments)
 
@@ -109,6 +110,11 @@ class McpManager:
                 state.connection = await self._connector.connect(state.config.id)
         except TimeoutError as error:
             raise McpError(f"MCP connection timed out: {state.config.id}") from error
+
+    @staticmethod
+    async def _list_tools(connection: McpConnection) -> tuple[RemoteTool, ...]:
+        async with asyncio.timeout(PROVIDER_REQUEST_TIMEOUT_SECONDS):
+            return await connection.list_tools()
 
     def _state(self, server_id: str) -> _ServerState:
         try:

@@ -43,9 +43,10 @@ export function useConversationStream({
       warned = false
       setStatus('connected')
     }
-    source.onmessage = (event) => {
+    source.addEventListener('message', (rawEvent) => {
       if (disposed) return
       try {
+        const event = rawEvent as MessageEvent<string>
         const message = JSON.parse(event.data) as ConversationMessage
         if (!Number.isInteger(message.id) || message.id <= cursor) return
         cursor = message.id
@@ -57,8 +58,12 @@ export function useConversationStream({
           handlers.current.onWarning()
         }
       }
-    }
+    })
+    source.addEventListener('heartbeat', () => {
+      if (!disposed) setStatus('connected')
+    })
     source.onerror = () => {
+      if (disposed) return
       setStatus('reconnecting')
       if (!warned) {
         warned = true

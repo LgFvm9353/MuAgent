@@ -1,4 +1,4 @@
-import { Check, Circle, Compass, FileSearch, GitBranch, Lightbulb, LoaderCircle, SearchCheck, ShieldCheck, TriangleAlert } from 'lucide-react'
+import { Check, Circle, Compass, FileSearch, Lightbulb, LoaderCircle, SearchCheck, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { useEffect, useState, type ComponentType } from 'react'
 import { apiDateTimestamp, parseApiDate } from '../lib/dateTime'
 import type { AgentWorkspaceState, WorkspaceAgentState } from '../types/api'
@@ -6,10 +6,8 @@ import type { AgentWorkspaceState, WorkspaceAgentState } from '../types/api'
 const metadata: Record<string, { name: string; role: string; icon: ComponentType<{ size?: number }> }> = {
   scout: { name: 'Scout', role: 'Local codebase reconnaissance', icon: Compass },
   researcher: { name: 'Researcher', role: 'External documentation and evidence', icon: FileSearch },
-  planner: { name: 'Planner', role: 'Plan synthesis and replanning', icon: GitBranch },
   worker: { name: 'Worker', role: 'Implementation and validation', icon: Lightbulb },
   reviewer: { name: 'Reviewer', role: 'Review, testing and verification', icon: SearchCheck },
-  'context-builder': { name: 'Context Builder', role: 'Deep context preparation', icon: FileSearch },
   oracle: { name: 'Oracle', role: 'Adversarial second opinion', icon: ShieldCheck },
   delegate: { name: 'Delegate', role: 'General-purpose delegation', icon: Circle },
 }
@@ -61,7 +59,7 @@ export function AgentWorkspace({ agents, compact = false }: { agents: AgentWorks
   }, [hasRunningAgent])
 
   return <section className={`agent-workspace${compact ? ' agent-workspace-compact' : ''}`} aria-label="Capability agent workspace" aria-live="polite">
-    {!compact && <div className="agent-workspace-heading"><div><span className="eyebrow">Live collaboration</span><h3>Capability Agent Workspace</h3></div><p>Selected specialists run in parallel from the same task snapshot; Planner synthesizes the result.</p></div>}
+    {!compact && <div className="agent-workspace-heading"><div><span className="eyebrow">Live collaboration</span><h3>Capability Agent Workspace</h3></div><p>Selected specialists run in parallel from the same task snapshot.</p></div>}
     <div className="agent-workspace-flow">{values.map((agent) => <AgentCard key={agent.id} agent={agent} now={now}/>)}</div>
   </section>
 }

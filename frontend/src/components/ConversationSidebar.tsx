@@ -34,7 +34,7 @@ export function ConversationSidebar({
       <div className="flex items-center gap-2 font-semibold"><Bot className="text-violet-400" size={20}/>对话记录</div>
       <button className="icon-button lg:hidden" onClick={onClose} aria-label="关闭对话列表"><X size={18}/></button>
     </div>
-    <div className="p-3"><button className="new-task" onClick={onNew}><Plus size={17}/>新建对话</button></div>
+    <div className="p-3"><button className="new-task" onClick={onNew} aria-label="新建对话" title="新建对话"><Plus size={17}/></button></div>
     <div className="flex-1 overflow-y-auto px-2 pb-4">
       {conversations.length === 0
         ? <p className="px-3 py-8 text-center text-sm text-zinc-500">还没有对话</p>

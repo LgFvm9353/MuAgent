@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
+from app.contracts.task import RiskLevel
 from app.harness.registry import AgentDefinition
 from app.tools.contracts import ToolContext
 from app.tools.model_adapter import ModelToolRuntimeAdapter
@@ -11,24 +12,7 @@ from app.tools.runtime import ToolRuntime
 @dataclass(frozen=True, slots=True)
 class AgentToolBinding:
     schemas: tuple[dict[str, Any], ...]
-    executor: "BudgetedModelToolAdapter"
-
-
-class BudgetedModelToolAdapter:
-    def __init__(self, delegate: ModelToolRuntimeAdapter, max_calls: int) -> None:
-        self._delegate = delegate
-        self._max_calls = max_calls
-        self._calls = 0
-
-    @property
-    def calls(self) -> int:
-        return self._calls
-
-    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self._calls >= self._max_calls:
-            return {"error": {"code": "tool_budget_exhausted"}}
-        self._calls += 1
-        return await self._delegate.execute(name, arguments)
+    executor: ModelToolRuntimeAdapter
 
 
 def bind_agent_tools(
@@ -36,22 +20,22 @@ def bind_agent_tools(
     definition: AgentDefinition,
     context: ToolContext,
     *,
-    max_calls: int,
     allowed_tools: frozenset[str] | None = None,
+    maximum_risk: RiskLevel = RiskLevel.LOW,
 ) -> AgentToolBinding | None:
-    if registry is None or max_calls <= 0:
+    if registry is None:
         return None
-    definitions = registry.model_tools(allowed_tools or definition.allowed_tools)
+    definitions = registry.model_tools(
+        allowed_tools or definition.allowed_tools,
+        maximum_risk=maximum_risk,
+    )
     if not definitions:
         return None
     allowed = frozenset(definition.name for definition in definitions)
     runtime = ToolRuntime(registry)
-    executor = BudgetedModelToolAdapter(
-        ModelToolRuntimeAdapter(
-            runtime,
-            context.model_copy(update={"allowed_tools": allowed}),
-        ),
-        max_calls,
+    executor = ModelToolRuntimeAdapter(
+        runtime,
+        context.model_copy(update={"allowed_tools": allowed}),
     )
     return AgentToolBinding(
         schemas=tuple(definition.anthropic_schema() for definition in definitions),

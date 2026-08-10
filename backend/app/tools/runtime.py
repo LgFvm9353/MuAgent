@@ -1,4 +1,3 @@
-import asyncio
 from time import monotonic
 
 from pydantic import ValidationError
@@ -73,11 +72,7 @@ class ToolRuntime:
             raise ToolInputError(f"tool input invalid: {error}") from error
 
         started = monotonic()
-        try:
-            async with asyncio.timeout(definition.timeout_seconds):
-                output = await definition.handler(request)
-        except TimeoutError as error:
-            raise ToolTimedOutError(definition.canonical_tool_id) from error
+        output = await definition.handler(request)
 
         try:
             validated = definition.output_model.model_validate(output)

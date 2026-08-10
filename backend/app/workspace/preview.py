@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from app.workspace.paths import Workspace, WorkspaceViolationError
+from app.workspace.paths import Workspace, WorkspaceViolationError, iter_workspace_files
 
 PreviewType = Literal["text", "markdown", "json", "code", "unsupported"]
 MAX_PREVIEW_BYTES = 256 * 1024
@@ -68,9 +68,7 @@ def list_artifacts(workspace_root: Path, task_id: str) -> tuple[ArtifactInfo, ..
     if root is None:
         return ()
     artifacts: list[ArtifactInfo] = []
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
+    for path in sorted(iter_workspace_files(root)):
         resolved = path.resolve(strict=True)
         if not resolved.is_relative_to(root):
             continue

@@ -79,8 +79,8 @@ class ContextBuilder:
         """Build the Supervisor input for task decomposition.
 
         Agent selection is owned by the Supervisor.  The task path must not
-        encode a Planner -> Worker -> Reviewer chain; the Supervisor may use
-        those profiles through the ``subagent`` tool when useful.
+        encode a fixed specialist chain; the Supervisor may use available
+        profiles through the ``subagent`` tool when useful.
         """
         return {
             "task": task.model_dump(mode="json"),
@@ -93,7 +93,7 @@ class ContextBuilder:
             "instruction": (
                 "Decompose this task as the root supervisor. Delegate bounded work through the "
                 "subagent tool when specialist input is useful, then return one executable plan. "
-                "Do not assume a fixed planner-worker-review sequence."
+                "Do not assume a fixed specialist sequence."
             ),
         }
 
@@ -118,7 +118,7 @@ class ContextBuilder:
             "instruction": (
                 "As the root supervisor, delegate only the bounded work needed to address verified "
                 "failures, then return a revised executable plan. Preserve successful work and do "
-                "not reintroduce a fixed planner-worker-review chain."
+                "not reintroduce a fixed specialist chain."
             ),
         }
 

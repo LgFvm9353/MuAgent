@@ -1,14 +1,16 @@
 import asyncio
 import json
 import re
+from dataclasses import dataclass
 from hashlib import sha256
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any, TypeVar, cast
 
 import openai
 from pydantic import BaseModel
 
-from app.agent_loop import ModelTurn, ModelTurnProvider, ToolCall, ToolResult
+from app.agent_loop import ModelTurn, ModelTurnProvider, TextDeltaSink, ToolCall, ToolResult
 from app.harness.model_gateway import (
     ModelGatewayError,
     ModelResult,
@@ -26,6 +28,24 @@ _PROVIDER_TOOL_NAME_INVALID = re.compile(r"[^A-Za-z0-9_-]+")
 _PROVIDER_TOOL_NAME_MAX_LENGTH = 64
 _PROVIDER_TOOL_NAME_HASH_LENGTH = 12
 _PROVIDER_ERROR_MESSAGE_MAX_LENGTH = 500
+
+
+@dataclass(frozen=True, slots=True)
+class _StreamToolCall:
+    id: str
+    name: str
+    arguments: str
+
+    @property
+    def function(self) -> SimpleNamespace:
+        return SimpleNamespace(name=self.name, arguments=self.arguments)
+
+    def model_dump(self, **_: Any) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": self.arguments},
+        }
 
 
 def _provider_tool_name(canonical_name: str) -> str:
@@ -53,6 +73,7 @@ class OpenAIModelProvider(ModelTurnProvider):
         tools: tuple[dict[str, Any], ...],
         max_tokens: int,
         effort: str,
+        on_text_delta: TextDeltaSink | None = None,
     ) -> ModelTurn:
         del effort
         provider_tools: list[dict[str, Any]] = []
@@ -89,6 +110,7 @@ class OpenAIModelProvider(ModelTurnProvider):
             messages=request_messages,
             tools=tuple(provider_tools),
             max_tokens=max_tokens,
+            on_text_delta=on_text_delta,
         )
         calls: list[ToolCall] = []
         for call in tuple(message.tool_calls or ()):
@@ -223,6 +245,7 @@ class OpenAIModelGateway:
         messages: list[dict[str, Any]],
         tools: tuple[dict[str, Any], ...],
         max_tokens: int,
+        on_text_delta: TextDeltaSink | None = None,
     ) -> tuple[ModelResult, Any]:
         started = monotonic()
         response: Any | None = None
@@ -233,12 +256,21 @@ class OpenAIModelGateway:
                     self._semaphore,
                     asyncio.timeout(max(0.001, self._timeout - (monotonic() - started))),
                 ):
-                    response = await self._client.chat.completions.create(
-                        model=model,
-                        messages=cast(Any, messages),
-                        tools=cast(Any, tools),
-                        max_completion_tokens=max_tokens,
-                    )
+                    if on_text_delta is None:
+                        response = await self._client.chat.completions.create(
+                            model=model,
+                            messages=cast(Any, messages),
+                            tools=cast(Any, tools),
+                            max_completion_tokens=max_tokens,
+                        )
+                    else:
+                        response = await self._stream_model_turn(
+                            model=model,
+                            messages=messages,
+                            tools=tools,
+                            max_tokens=max_tokens,
+                            on_text_delta=on_text_delta,
+                        )
                 break
             except Exception as error:
                 classified = self._classify(error)
@@ -274,6 +306,77 @@ class OpenAIModelGateway:
             ),
         )
         return result, choice.message
+
+    async def _stream_model_turn(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: tuple[dict[str, Any], ...],
+        max_tokens: int,
+        on_text_delta: TextDeltaSink,
+    ) -> Any:
+        stream = await self._client.chat.completions.create(
+            model=model,
+            messages=cast(Any, messages),
+            tools=cast(Any, tools),
+            max_completion_tokens=max_tokens,
+            stream=True,
+        )
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+        usage: Any | None = None
+        request_id: str | None = None
+        async for chunk in stream:
+            request_id = request_id or getattr(chunk, "id", None)
+            usage = getattr(chunk, "usage", None) or usage
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            text = getattr(delta, "content", None)
+            if text:
+                content_parts.append(text)
+                result = on_text_delta(text)
+                if asyncio.iscoroutine(result):
+                    await result
+            for part in getattr(delta, "tool_calls", None) or ():
+                index = int(getattr(part, "index", 0) or 0)
+                item = tool_calls.setdefault(
+                    index,
+                    {
+                        "id": getattr(part, "id", None) or f"stream-call-{index}",
+                        "name": "",
+                        "arguments": "",
+                    },
+                )
+                if getattr(part, "id", None):
+                    item["id"] = part.id
+                function = getattr(part, "function", None)
+                if function is not None:
+                    item["name"] += getattr(function, "name", None) or ""
+                    item["arguments"] += getattr(function, "arguments", None) or ""
+
+        calls = tuple(
+            _StreamToolCall(item["id"], item["name"], item["arguments"])
+            for _, item in sorted(tool_calls.items())
+        )
+        message = SimpleNamespace(content="".join(content_parts), tool_calls=calls)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=message,
+                    finish_reason=finish_reason or ("tool_calls" if calls else "stop"),
+                )
+            ],
+            usage=usage or SimpleNamespace(prompt_tokens=0, completion_tokens=0),
+            model=model,
+            _request_id=request_id,
+        )
 
     @staticmethod
     def _merge_usage(current: ModelUsage | None, incoming: ModelUsage) -> ModelUsage:

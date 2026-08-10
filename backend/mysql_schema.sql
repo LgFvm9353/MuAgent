@@ -7,18 +7,34 @@ CREATE DATABASE IF NOT EXISTS `agent`
 
 USE `agent`;
 
+CREATE TABLE IF NOT EXISTS `projects` (
+    `id` CHAR(32) NOT NULL,
+    `name` VARCHAR(255) NOT NULL,
+    `root_path` VARCHAR(768) NOT NULL,
+    `access_mode` VARCHAR(16) NOT NULL DEFAULT 'edit',
+    `created_at` DATETIME(6) NOT NULL,
+    `updated_at` DATETIME(6) NOT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uq_projects_root_path` (`root_path`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `conversations` (
     `id` CHAR(32) NOT NULL,
     `title` VARCHAR(255) NOT NULL,
+    `project_id` CHAR(32) NULL,
     `updated_at` DATETIME(6) NOT NULL,
     `created_at` DATETIME(6) NOT NULL,
     PRIMARY KEY (`id`),
-    KEY `ix_conversations_updated_at` (`updated_at`)
+    KEY `ix_conversations_updated_at` (`updated_at`),
+    KEY `ix_conversations_project_id` (`project_id`),
+    CONSTRAINT `fk_conversations_project_id`
+        FOREIGN KEY (`project_id`) REFERENCES `projects` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `tasks` (
     `id` CHAR(32) NOT NULL,
     `conversation_id` CHAR(32) NOT NULL,
+    `project_id` CHAR(32) NULL,
     `trace_id` CHAR(32) NOT NULL,
     `state` VARCHAR(32) NOT NULL,
     `contract` JSON NOT NULL,
@@ -31,8 +47,11 @@ CREATE TABLE IF NOT EXISTS `tasks` (
     KEY `ix_tasks_trace_id` (`trace_id`),
     KEY `ix_tasks_state` (`state`),
     KEY `ix_tasks_state_updated` (`state`, `updated_at`),
+    KEY `ix_tasks_project_id` (`project_id`),
     CONSTRAINT `fk_tasks_conversation_id`
-        FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE
+        FOREIGN KEY (`conversation_id`) REFERENCES `conversations` (`id`) ON DELETE CASCADE,
+    CONSTRAINT `fk_tasks_project_id`
+        FOREIGN KEY (`project_id`) REFERENCES `projects` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `conversation_turns` (
@@ -155,22 +174,6 @@ CREATE TABLE IF NOT EXISTS `conversation_messages` (
     KEY `ix_conversation_messages_conversation_id` (`conversation_id`),
     KEY `ix_conversation_messages_task_id` (`task_id`),
     KEY `ix_conversation_messages_turn_id` (`turn_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS `proposals` (
-    `id` CHAR(32) NOT NULL,
-    `task_id` CHAR(32) NOT NULL,
-    `agent_run_id` CHAR(32) NOT NULL,
-    `version` INT NOT NULL,
-    `content` JSON NOT NULL,
-    `created_at` DATETIME(6) NOT NULL,
-    PRIMARY KEY (`id`),
-    KEY `ix_proposals_task_id` (`task_id`),
-    KEY `ix_proposals_agent_run_id` (`agent_run_id`),
-    CONSTRAINT `fk_proposals_task_id`
-        FOREIGN KEY (`task_id`) REFERENCES `tasks` (`id`) ON DELETE CASCADE,
-    CONSTRAINT `fk_proposals_agent_run_id`
-        FOREIGN KEY (`agent_run_id`) REFERENCES `agent_runs` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `execution_plans` (
@@ -508,14 +511,14 @@ CREATE TABLE IF NOT EXISTS `alembic_version` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO `alembic_version` (`version_num`)
-SELECT '0010_widen_agent_run_role'
+SELECT '0013_shorten_project_root_path'
 WHERE NOT EXISTS (
     SELECT 1
     FROM `alembic_version`
 );
 
 UPDATE `alembic_version`
-SET `version_num` = '0010_widen_agent_run_role'
+SET `version_num` = '0013_shorten_project_root_path'
 WHERE `version_num` IN (
     '0001_initial',
     '0002_conversations',
@@ -527,5 +530,8 @@ WHERE `version_num` IN (
     '0007_remove_handoff_runtime',
     '0008_context_summaries',
     '0009_long_term_memory',
-    '0010_widen_agent_run_role'
+    '0010_widen_agent_run_role',
+    '0011_projects',
+    '0012_cleanup_legacy_tables',
+    '0013_shorten_project_root_path'
 );

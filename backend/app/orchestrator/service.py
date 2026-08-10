@@ -65,8 +65,8 @@ class OrchestratorService:
             await session.commit()
 
         # All model-driven task decisions are owned by the Supervisor. It may
-        # call Planner/Worker/Reviewer profiles through ``subagent`` when
-        # useful, but there is no fixed Planner -> Worker -> Reviewer chain.
+        # call specialist profiles through ``subagent`` when useful, but there
+        # is no fixed specialist chain.
         plan_model = await self._runtime.supervisor_plan(contract, workspace_files)
 
         async with self._sessions() as session:

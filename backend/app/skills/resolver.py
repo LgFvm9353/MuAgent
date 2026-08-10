@@ -10,8 +10,6 @@ class ResolvedSkill:
     instructions: str
     metadata: dict[str, object]
     allowed_tools: frozenset[str]
-    max_tool_rounds: int
-    max_tool_calls: int
     output_schema: dict[str, object] | None
 
 
@@ -42,7 +40,5 @@ class SkillResolver:
                 "content_hash": skill.content_hash,
             },
             allowed_tools=allowed,
-            max_tool_rounds=skill.manifest.max_tool_rounds,
-            max_tool_calls=skill.manifest.max_tool_calls,
             output_schema=skill.output_schema,
         )

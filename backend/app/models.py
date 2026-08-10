@@ -19,6 +19,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
 from app.orchestrator.state_machine import TaskState
 
+PROJECT_ROOT_PATH_MAX_LENGTH = 768
+
 
 class Base(DeclarativeBase):
     @declared_attr.directive
@@ -29,6 +31,24 @@ class Base(DeclarativeBase):
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class Project(Base, TimestampMixin):
+    __tablename__ = "projects"
+    id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 768 * 4 bytes (utf8mb4) stays within InnoDB's 3072-byte index limit.
+    root_path: Mapped[str] = mapped_column(
+        String(PROJECT_ROOT_PATH_MAX_LENGTH), nullable=False, unique=True
+    )
+    access_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="edit")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 
@@ -43,6 +63,9 @@ class Conversation(Base, TimestampMixin):
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
         index=True,
+    )
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), index=True
     )
 
 
@@ -103,6 +126,9 @@ class Task(Base, TimestampMixin):
     )
     conversation_id: Mapped[UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), index=True
     )
     trace_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True, native_uuid=False), nullable=False, index=True
@@ -202,17 +228,6 @@ class ConversationMessage(Base, TimestampMixin):
             "mysql_collate": "utf8mb4_unicode_ci",
         },
     )
-
-
-class Proposal(Base, TimestampMixin):
-    __tablename__ = "proposals"
-    id: Mapped[UUID] = mapped_column(
-        Uuid(as_uuid=True, native_uuid=False), primary_key=True, default=uuid4
-    )
-    task_id: Mapped[UUID] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
-    agent_run_id: Mapped[UUID] = mapped_column(ForeignKey("agent_runs.id", ondelete="CASCADE"))
-    version: Mapped[int] = mapped_column(Integer, nullable=False)
-    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
 class ExecutionPlanRecord(Base, TimestampMixin):

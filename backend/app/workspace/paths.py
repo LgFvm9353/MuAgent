@@ -1,8 +1,38 @@
+import os
+from collections.abc import Iterator
 from pathlib import Path
 
 
 class WorkspaceViolationError(ValueError):
     pass
+
+
+IGNORED_SCAN_DIRECTORIES = frozenset(
+    {".git", "node_modules", ".venv", "__pycache__", "dist", "build"}
+)
+
+
+def iter_workspace_files(
+    root: Path,
+    *,
+    ignored_directories: frozenset[str] = IGNORED_SCAN_DIRECTORIES,
+) -> Iterator[Path]:
+    """Yield regular files without descending into dependency/generated trees."""
+    resolved_root = root.resolve(strict=True)
+    for current, directories, filenames in os.walk(
+        resolved_root, topdown=True, followlinks=False
+    ):
+        current_path = Path(current)
+        directories[:] = sorted(
+            directory
+            for directory in directories
+            if directory not in ignored_directories
+            and not (current_path / directory).is_symlink()
+        )
+        for filename in filenames:
+            path = current_path / filename
+            if not path.is_symlink() and path.is_file():
+                yield path
 
 
 class Workspace:
@@ -41,7 +71,7 @@ class Workspace:
     def validate_capacity(self, incoming_bytes: int, *, replacing: Path | None = None) -> None:
         if incoming_bytes > self.max_file_bytes:
             raise WorkspaceViolationError("file size limit exceeded")
-        files = [path for path in self.root.rglob("*") if path.is_file() and not path.is_symlink()]
+        files = list(iter_workspace_files(self.root))
         replacing_exists = replacing is not None and replacing.is_file()
         if len(files) + (0 if replacing_exists else 1) > self.max_files:
             raise WorkspaceViolationError("file count limit exceeded")

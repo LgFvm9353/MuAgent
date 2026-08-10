@@ -7,8 +7,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.config_defaults import (
     DEFAULT_ARTIFACTS_ROOT,
-    DEFAULT_COLLABORATION_MAX_TOOL_CALLS_PER_AGENT,
-    DEFAULT_COLLABORATION_MAX_TOOL_ROUNDS_PER_AGENT,
     DEFAULT_CONTEXT_COMPRESSION_TARGET,
     DEFAULT_CONTEXT_COMPRESSION_THRESHOLD,
     DEFAULT_CONTEXT_MODEL_MAX_OUTPUT_TOKENS,
@@ -43,17 +41,17 @@ from app.config_defaults import (
     DEFAULT_SSE_HEARTBEAT_SECONDS,
     DEFAULT_SSE_POLL_INTERVAL_SECONDS,
     DEFAULT_TOOL_TIMEOUT_SECONDS,
+    DEFAULT_WORKSPACE_ALLOWED_ROOTS,
     DEFAULT_WORKSPACE_ROOT,
+    PROVIDER_REQUEST_TIMEOUT_SECONDS,
 )
 
 AgentId = Literal[
     "supervisor",
     "scout",
     "researcher",
-    "planner",
     "worker",
     "reviewer",
-    "context-builder",
     "oracle",
     "delegate",
 ]
@@ -73,9 +71,12 @@ class Settings(BaseSettings):
     openai_model: str | None = None
     router_model: str | None = None
     workspace_root: Path = Path(DEFAULT_WORKSPACE_ROOT)
+    workspace_allowed_roots: str = DEFAULT_WORKSPACE_ALLOWED_ROOTS
     artifacts_root: Path = Path(DEFAULT_ARTIFACTS_ROOT)
     model_concurrency: int = Field(default=DEFAULT_MODEL_CONCURRENCY, ge=1, le=32)
-    model_timeout_seconds: float = Field(default=DEFAULT_MODEL_TIMEOUT_SECONDS, gt=0)
+    model_timeout_seconds: float = Field(
+        default=DEFAULT_MODEL_TIMEOUT_SECONDS, gt=0, le=PROVIDER_REQUEST_TIMEOUT_SECONDS
+    )
     context_compression_model: str | None = None
     context_compression_model_context_window: int | None = Field(default=None, ge=16_384)
     context_compression_model_max_output_tokens: int | None = Field(default=None, ge=1_024)
@@ -121,22 +122,16 @@ class Settings(BaseSettings):
     )
     tool_timeout_seconds: float = Field(default=DEFAULT_TOOL_TIMEOUT_SECONDS, gt=0)
     mention_execution_tools: str = DEFAULT_MENTION_EXECUTION_TOOLS
-    collaboration_max_tool_rounds_per_agent: int = Field(
-        default=DEFAULT_COLLABORATION_MAX_TOOL_ROUNDS_PER_AGENT, ge=0, le=20
-    )
-    collaboration_max_tool_calls_per_agent: int = Field(
-        default=DEFAULT_COLLABORATION_MAX_TOOL_CALLS_PER_AGENT, ge=0, le=50
-    )
     skills_root: Path = Path(DEFAULT_SKILLS_ROOT)
     mcp_config_path: Path = Path(DEFAULT_MCP_CONFIG_PATH)
     mcp_connect_timeout_seconds: float = Field(
-        default=DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS, gt=0, le=300.0
+        default=DEFAULT_MCP_CONNECT_TIMEOUT_SECONDS, gt=0, le=PROVIDER_REQUEST_TIMEOUT_SECONDS
     )
     mcp_read_tool_timeout_seconds: float = Field(
-        default=DEFAULT_MCP_READ_TOOL_TIMEOUT_SECONDS, gt=0, le=300.0
+        default=DEFAULT_MCP_READ_TOOL_TIMEOUT_SECONDS, gt=0, le=PROVIDER_REQUEST_TIMEOUT_SECONDS
     )
     mcp_tool_timeout_seconds: float = Field(
-        default=DEFAULT_MCP_TOOL_TIMEOUT_SECONDS, gt=0, le=300.0
+        default=DEFAULT_MCP_TOOL_TIMEOUT_SECONDS, gt=0, le=PROVIDER_REQUEST_TIMEOUT_SECONDS
     )
     mcp_close_timeout_seconds: float = Field(
         default=DEFAULT_MCP_CLOSE_TIMEOUT_SECONDS, gt=0, le=5.0

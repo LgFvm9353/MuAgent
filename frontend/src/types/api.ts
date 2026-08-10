@@ -11,6 +11,14 @@ export interface ConversationThread {
   updated_at: string
   latest_task_id: string | null
   latest_task_state: TaskState | null
+  project_id: string | null
+}
+
+export interface ProjectSummary {
+  id: string
+  name: string
+  root_path: string
+  access_mode: string
 }
 
 export type CollaborationMode = 'single' | 'parallel'
@@ -72,6 +80,7 @@ export interface Task {
   cancel_requested: boolean
   created_at: string
   updated_at: string
+  project_id: string | null
 }
 
 export interface TaskEvent {
@@ -131,6 +140,7 @@ export interface SupervisorRequest {
 
 export interface TaskContract {
   task_id: string
+  project_id?: string | null
   goal: string
   inputs: Record<string, string>
   constraints: string[]
@@ -201,7 +211,7 @@ export interface ChatMessage {
 export type StreamStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'closed' | 'error'
 export type ToastTone = 'success' | 'warning' | 'error'
 
-export type WorkspaceAgentId = 'scout' | 'researcher' | 'planner' | 'worker' | 'reviewer' | 'context-builder' | 'oracle' | 'delegate'
+export type WorkspaceAgentId = 'scout' | 'researcher' | 'worker' | 'reviewer' | 'oracle' | 'delegate'
 export type WorkspaceAgentStatus = 'idle' | 'waiting' | 'running' | 'completed' | 'failed'
 
 export interface WorkspaceAgentState {

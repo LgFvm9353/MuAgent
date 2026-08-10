@@ -11,6 +11,11 @@ from app.contracts.task import TaskContract
 
 class ConversationCreate(ContractModel):
     title: str = Field(default="新对话", min_length=1, max_length=255)
+    project_id: UUID | None = None
+
+
+class ConversationProjectUpdate(ContractModel):
+    project_id: UUID | None = None
 
 
 class ConversationResponse(ContractModel):
@@ -20,6 +25,7 @@ class ConversationResponse(ContractModel):
     updated_at: datetime
     latest_task_id: UUID | None = None
     latest_task_state: str | None = None
+    project_id: UUID | None = None
 
 
 class ConversationTurnCreate(ContractModel):

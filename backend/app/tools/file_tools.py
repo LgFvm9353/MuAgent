@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import Field
 
 from app.contracts.base import ContractModel
-from app.workspace.paths import Workspace
+from app.workspace.paths import Workspace, iter_workspace_files
 
 
 class PathInput(ContractModel):
@@ -19,6 +19,22 @@ class ListFilesInput(ContractModel):
 
 class FileListOutput(ContractModel):
     files: tuple[str, ...]
+
+
+class SearchFilesInput(ContractModel):
+    query: str = Field(min_length=1, max_length=500)
+    path: str = Field(default=".", min_length=1, max_length=1_000)
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class SearchMatch(ContractModel):
+    path: str
+    line: int
+    text: str
+
+
+class SearchFilesOutput(ContractModel):
+    matches: tuple[SearchMatch, ...]
 
 
 class FileContentOutput(ContractModel):
@@ -52,16 +68,48 @@ class FileTools:
         )
         if not base.is_dir():
             raise ValueError("list path must be a directory")
-        files = await asyncio.to_thread(
-            lambda: tuple(
-                sorted(
-                    path.relative_to(self._workspace.root).as_posix()
-                    for path in base.rglob("*")
-                    if path.is_file() and not path.is_symlink()
-                )
+        files = await asyncio.to_thread(self._list_files, base)
+        return FileListOutput(files=files[: self._workspace.max_files])
+
+    def _list_files(self, base: Path) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                path.relative_to(self._workspace.root).as_posix()
+                for path in iter_workspace_files(base)
             )
         )
-        return FileListOutput(files=files[: self._workspace.max_files])
+
+    async def search_files(self, request: SearchFilesInput) -> SearchFilesOutput:
+        base = (
+            self._workspace.root
+            if request.path == "."
+            else self._workspace.resolve(request.path, must_exist=True)
+        )
+        if not base.is_dir():
+            raise ValueError("search path must be a directory")
+        matches = await asyncio.to_thread(self._search_files, base, request)
+        return SearchFilesOutput(matches=matches)
+
+    def _search_files(self, base: Path, request: SearchFilesInput) -> tuple[SearchMatch, ...]:
+        matches: list[SearchMatch] = []
+        for path in iter_workspace_files(base):
+            if len(matches) >= request.limit:
+                break
+            relative = path.relative_to(self._workspace.root)
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            for line_number, line in enumerate(text.splitlines(), 1):
+                if request.query.casefold() in line.casefold():
+                    matches.append(
+                        SearchMatch(
+                            path=relative.as_posix(), line=line_number, text=line[:1_000]
+                        )
+                    )
+                    if len(matches) >= request.limit:
+                        break
+        return tuple(matches)
 
     async def read_file(self, request: PathInput) -> FileContentOutput:
         path = self._workspace.resolve(request.path, must_exist=True)

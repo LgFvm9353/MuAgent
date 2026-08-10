@@ -1,15 +1,16 @@
 import { Bot, Menu, Plus, Wifi, WifiOff } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AgentWorkingIndicator } from './components/AgentWorkspace'
 import { CollaborationDetails } from './components/CollaborationDetails'
 import { Conversation } from './components/Conversation'
 import { ConversationSidebar } from './components/ConversationSidebar'
+import { ProjectSwitcher } from './components/ProjectSwitcher'
 import { TaskComposer } from './components/TaskComposer'
 import { ToastProvider, useToast } from './components/ToastProvider'
 import { useConversationStream } from './hooks/useConversationStream'
 import { useTaskStream } from './hooks/useTaskStream'
 import {
   ApiError,
+  attachConversationProject,
   cancelTask,
   createConversation,
   getConversation,
@@ -20,6 +21,8 @@ import {
   listPendingSupervisorRequests,
   replyToSupervisorRequest,
   listConversations,
+  listProjects,
+  openProjectDialog,
   sendConversationMessage,
 } from './lib/api'
 import { deriveAgentWorkspace, deriveConversationAgentWorkspace } from './lib/agentWorkspace'
@@ -28,6 +31,7 @@ import type {
   ChatMessage,
   ConversationMessage,
   ConversationThread,
+  ProjectSummary,
   Task,
   TaskEvent,
   TaskResult,
@@ -46,6 +50,7 @@ function errorText(error: unknown) {
 function Workbench() {
   const { show } = useToast()
   const [threads, setThreads] = useState<ConversationThread[]>([])
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [selected, setSelected] = useState<ConversationThread | null>(null)
   const [activeTask, setActiveTask] = useState<Task | null>(null)
   const [events, setEvents] = useState<TaskEvent[]>([])
@@ -59,13 +64,15 @@ function Workbench() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const loadGeneration = useRef(0)
   const loadController = useRef<AbortController | null>(null)
+  const selectedConversationId = selected?.id ?? null
 
   const loadThreads = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      const items = await listConversations()
+      const [items, projectItems] = await Promise.all([listConversations(), listProjects()])
       setThreads(items)
+      setProjects(projectItems)
       setSelected((current) => current || items[0] || null)
     } catch (cause) {
       setError(errorText(cause))
@@ -77,14 +84,14 @@ function Workbench() {
   useEffect(() => { void loadThreads() }, [loadThreads])
 
   useEffect(() => {
-    if (!selected) {
+    if (!selectedConversationId) {
       setSupervisorRequests([])
       return
     }
     let disposed = false
     const poll = async () => {
       try {
-        const items = await listPendingSupervisorRequests(selected.id)
+        const items = await listPendingSupervisorRequests(selectedConversationId)
         if (!disposed) setSupervisorRequests(items)
       } catch {
         // The request inbox is best-effort; the conversation stream remains authoritative.
@@ -93,7 +100,7 @@ function Workbench() {
     void poll()
     const timer = window.setInterval(() => void poll(), 1000)
     return () => { disposed = true; window.clearInterval(timer) }
-  }, [selected?.id])
+  }, [selectedConversationId])
 
   const loadSelected = useCallback(async (thread: ConversationThread) => {
     const generation = ++loadGeneration.current
@@ -176,10 +183,27 @@ function Workbench() {
     if (!event.to_state) return
     setActiveTask((task) => task ? { ...task, state: event.to_state as TaskState, updated_at: event.created_at } : task)
     setSelected((thread) => thread ? { ...thread, latest_task_state: event.to_state as TaskState, updated_at: event.created_at } : thread)
-  }, [activeTask?.id])
+  }, [])
 
   const updateMessage = useCallback((message: ConversationMessage) => {
-    setConversation((items) => items.some((item) => item.id === message.id) ? items : [...items, message])
+    setConversation((items) => {
+      const streamId = typeof message.content.stream_id === 'string' ? message.content.stream_id : null
+      if (message.message_type === 'agent_delta' && streamId) {
+        const existing = items.findIndex((item) => item.message_type === 'agent_delta' && item.content.stream_id === streamId)
+        if (existing === -1) return [...items, message]
+        const next = [...items]
+        next[existing] = message
+        return next
+      }
+      const withoutStream = streamId
+        ? items.filter((item) => !(item.message_type === 'agent_delta' && item.content.stream_id === streamId))
+        : items
+      const existing = withoutStream.findIndex((item) => item.id === message.id)
+      if (existing === -1) return [...withoutStream, message]
+      const next = [...withoutStream]
+      next[existing] = message
+      return next
+    })
     if (message.phase === 'root' && ['agent_message', 'agent_error'].includes(message.message_type)) {
       setOptimisticWorkingAgents((items) => items.map((item) => ({ ...item, status: message.message_type === 'agent_error' ? 'failed' : 'completed' })))
       window.setTimeout(() => setOptimisticWorkingAgents([]), 3500)
@@ -264,7 +288,7 @@ function Workbench() {
   const submit = async (goal: string) => {
     if (!selected) return false
     setBusy(true)
-    const mentioned = Array.from(goal.matchAll(/(?:^|\s)@(scout|researcher|planner|worker|reviewer|context-builder|oracle|delegate)(?=\s|$)/g), (match) => match[1] as WorkspaceAgentId)
+    const mentioned = Array.from(goal.matchAll(/(?:^|\s)@(scout|researcher|worker|reviewer|oracle|delegate)(?=\s|$)/g), (match) => match[1] as WorkspaceAgentId)
     const selectedAgents: WorkspaceAgentId[] = mentioned.length > 0 ? mentioned : ['delegate']
     setOptimisticWorkingAgents(selectedAgents.map((id) => ({ id, status: 'running' })))
     try {
@@ -279,9 +303,7 @@ function Workbench() {
       setThreads((items) => items.map((item) => item.id === thread.id ? thread : item))
       setEvents([])
       setResult(null)
-      const messages = await getConversationMessages(selected.id)
-      setConversation(messages)
-      if (!turn.task_id && (turn.state === 'completed' || turn.state === 'failed' || messages.some((message) => message.turn_id === turn.turn_id && message.phase === 'root'))) {
+      if (!turn.task_id && (turn.state === 'completed' || turn.state === 'failed')) {
         setOptimisticWorkingAgents([])
       }
       show({
@@ -293,11 +315,6 @@ function Workbench() {
             ? `${turn.selected_agents.join('、')} 已开始并行独立分析。`
             : `${turn.selected_agents.join('、')} 已开始单 Agent 响应。`,
       })
-      if (!turn.task_id) {
-        for (const delay of [500, 1500, 4000, 8000]) {
-          window.setTimeout(() => { void refreshSelected() }, delay)
-        }
-      }
       return true
     } catch (cause) {
       setOptimisticWorkingAgents([])
@@ -311,7 +328,7 @@ function Workbench() {
   const newConversation = async () => {
     setBusy(true)
     try {
-      const thread = await createConversation()
+      const thread = await createConversation('新对话', selected?.project_id)
       setThreads((items) => [thread, ...items])
       setSelected(thread)
       setActiveTask(null)
@@ -323,6 +340,26 @@ function Workbench() {
       setSidebarOpen(false)
     } catch (cause) {
       show({ tone: 'error', title: '新建对话失败', description: errorText(cause) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const openProject = async () => {
+    setBusy(true)
+    try {
+      const project = await openProjectDialog()
+      if (!project) return
+      setProjects((items) => [project, ...items.filter((item) => item.id !== project.id)])
+      const thread = selected
+        ? await attachConversationProject(selected.id, project.id)
+        : await createConversation(project.name, project.id)
+      if (!selected) setThreads((items) => [thread, ...items])
+      else setThreads((items) => items.map((item) => item.id === thread.id ? thread : item))
+      setSelected(thread)
+      show({ tone: 'success', title: '项目已打开', description: project.root_path })
+    } catch (cause) {
+      show({ tone: 'error', title: '无法打开项目', description: errorText(cause) })
     } finally {
       setBusy(false)
     }
@@ -352,11 +389,11 @@ function Workbench() {
     <main className="main-panel">
       <header className="topbar">
         <div className="flex items-center gap-3"><button className="icon-button lg:hidden" onClick={() => setSidebarOpen(true)} aria-label="打开对话列表"><Menu size={19}/></button><div className="brand-mark"><Bot size={19}/></div><div><h1>Agent Console</h1><p>多 Agent 持续对话工作台</p></div></div>
-        <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()}><Plus size={15}/>新建对话</button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : conversationStreamStatus === 'reconnecting' || taskStreamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
+        <div className="flex items-center gap-2"><button className="secondary-button hidden sm:flex" disabled={busy} onClick={() => void newConversation()} aria-label="新建对话" title="新建对话"><Plus size={15}/></button><div className={`connection ${connected ? 'connection-online' : ''}`}>{connected ? <Wifi size={14}/> : <WifiOff size={14}/>}<span>{connected ? '实时连接' : conversationStreamStatus === 'reconnecting' || taskStreamStatus === 'reconnecting' ? '正在重连' : 'API 已连接'}</span></div></div>
       </header>
-      {selected && <div className="task-heading"><div className="min-w-0"><span className="eyebrow">当前对话</span><h2 className="truncate">{selected.title}</h2></div><div className="flex items-center gap-2"><AgentWorkingIndicator agents={agentWorkspace}/>{activeTask && <span className={`state-pill state-${activeTask.state.toLowerCase()}`}>{activeTask.state.replaceAll('_', ' ')}</span>}</div></div>}
+      <ProjectSwitcher project={projects.find((item) => item.id === selected?.project_id) || null} busy={busy} onOpen={openProject}/>
       <section className="message-panel"><Conversation messages={messages} loading={loading} error={error} progressAgents={progressAgents} onSupervisorReply={replySupervisor} onRetry={() => selected ? void loadSelected(selected) : void loadThreads()}/>{activeTask && agentWorkspace && <CollaborationDetails task={activeTask} agents={agentWorkspace} events={events} result={result}/>}</section>
-      {selected ? <TaskComposer busy={busy} running={running} onSubmit={submit} onCancel={cancel}/> : <div className="p-6 text-center text-sm text-zinc-500">请先新建一个对话。</div>}
+      {selected ? <TaskComposer busy={busy} running={running} onSubmit={submit} onCancel={cancel}/> : <div className="p-6 text-center text-sm text-zinc-500">请选择一个对话。</div>}
     </main>
   </div>
 }

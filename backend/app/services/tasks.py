@@ -33,6 +33,7 @@ class TaskService:
         task = Task(
             id=contract.task_id,
             conversation_id=conversation_id,
+            project_id=contract.project_id,
             trace_id=uuid4(),
             contract=contract.model_dump(mode="json"),
         )

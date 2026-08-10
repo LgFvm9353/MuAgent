@@ -9,8 +9,15 @@ class ModelToolRuntimeAdapter:
     def __init__(self, runtime: ToolRuntime, context: ToolContext) -> None:
         self._runtime = runtime
         self._context = context
+        self._calls = 0
+
+    @property
+    def calls(self) -> int:
+        """Number of model-issued tool calls handled by this adapter."""
+        return self._calls
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self._calls += 1
         try:
             result = await self._runtime.invoke(
                 ToolInvocation(

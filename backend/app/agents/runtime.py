@@ -69,8 +69,7 @@ class AgentRuntime:
     ) -> ExecutionPlan:
         """Ask the root Supervisor for a plan.
 
-        The Supervisor may delegate specialist work through ``subagent``. The
-        orchestrator no longer invokes a Planner agent directly.
+        The Supervisor may delegate specialist work through ``subagent``.
         """
         context = self._context.decomposition(
             task,
@@ -176,7 +175,6 @@ class AgentRuntime:
             self._tools,
             definition,
             ToolContext(task_id=task_id),
-            max_calls=64,
         )
         loop = AgentLoop(
             provider=self._gateway.model_turn_provider(),
@@ -187,7 +185,7 @@ class AgentRuntime:
             ),
             tools=binding.schemas if binding is not None else (),
             executor=binding.executor if binding is not None else None,
-            config=AgentLoopConfig(max_turns=16, max_tool_calls=64),
+            config=AgentLoopConfig(),
         )
         completed = await loop.prompt(json.dumps(context, ensure_ascii=False, sort_keys=True))
         raw_content = completed.content

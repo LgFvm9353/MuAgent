@@ -2,17 +2,15 @@ import { Send, Square } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 interface TaskComposerProps { busy: boolean; running: boolean; onSubmit: (goal: string) => Promise<boolean>; onCancel: () => Promise<void> }
-type AgentId = 'scout' | 'researcher' | 'planner' | 'worker' | 'reviewer' | 'context-builder' | 'oracle' | 'delegate'
+type AgentId = 'scout' | 'researcher' | 'worker' | 'reviewer' | 'oracle' | 'delegate'
 interface AgentOption { id: AgentId; name: string; description: string }
 interface MentionQuery { start: number; end: number; query: string }
 
 const agentOptions: AgentOption[] = [
   { id: 'scout', name: 'Scout', description: 'Local codebase reconnaissance' },
   { id: 'researcher', name: 'Researcher', description: 'External documentation and facts' },
-  { id: 'planner', name: 'Planner', description: 'Implementation planning' },
   { id: 'worker', name: 'Worker', description: 'Implementation and validation' },
   { id: 'reviewer', name: 'Reviewer', description: 'Review, testing and verification' },
-  { id: 'context-builder', name: 'Context Builder', description: 'Deep task context' },
   { id: 'oracle', name: 'Oracle', description: 'Adversarial second opinion' },
   { id: 'delegate', name: 'Delegate', description: 'General-purpose delegation' },
 ]
@@ -26,7 +24,7 @@ function mentionAtCursor(value: string, cursor: number): MentionQuery | null {
 }
 
 function selectedAgentIds(value: string): Set<string> {
-  return new Set(Array.from(value.matchAll(/(?:^|\s)@(scout|researcher|planner|worker|reviewer|context-builder|oracle|delegate)(?=\s|$)/g), (match) => match[1]))
+  return new Set(Array.from(value.matchAll(/(?:^|\s)@(scout|researcher|worker|reviewer|oracle|delegate)(?=\s|$)/g), (match) => match[1]))
 }
 
 export function TaskComposer({ busy, running, onSubmit, onCancel }: TaskComposerProps) {

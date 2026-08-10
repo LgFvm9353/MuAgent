@@ -13,8 +13,6 @@ class SkillManifest(BaseModel):
     allowed_tools: frozenset[str] = frozenset()
     denied_tools: frozenset[str] = frozenset()
     required_tools: frozenset[str] = frozenset()
-    max_tool_rounds: int = Field(default=6, ge=0, le=20)
-    max_tool_calls: int = Field(default=10, ge=0, le=50)
     references: tuple[str, ...] = ()
     output_schema: str | None = None
 

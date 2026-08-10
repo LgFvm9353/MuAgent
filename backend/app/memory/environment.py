@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.memory.contracts import EnvironmentSnapshot, EnvironmentSource
+from app.workspace.paths import iter_workspace_files
 
 _ALLOWED_NAMES = frozenset(
     {
@@ -37,7 +38,7 @@ class EnvironmentMemoryService:
         if not self._root.is_dir():
             warnings.append("workspace_not_found")
         else:
-            for path in sorted(self._root.rglob("*")):
+            for path in sorted(iter_workspace_files(self._root)):
                 if not self._allowed(path):
                     continue
                 try:

@@ -5,8 +5,8 @@ import { AgentMessage } from './AgentMessage'
 
 const bottomThreshold = 96
 const agentNames: Record<WorkspaceAgentId, string> = {
-  scout: 'Scout', researcher: 'Researcher', planner: 'Planner', worker: 'Worker',
-  reviewer: 'Reviewer', 'context-builder': 'Context Builder', oracle: 'Oracle', delegate: 'Delegate',
+  scout: 'Scout', researcher: 'Researcher', worker: 'Worker',
+  reviewer: 'Reviewer', oracle: 'Oracle', delegate: 'Delegate',
 }
 
 type AgentProgressItem = { id: WorkspaceAgentId; status: WorkspaceAgentStatus }

@@ -7,7 +7,6 @@ executors from the loop's perspective.
 
 from .loop import (
     AgentAbortedError,
-    AgentBudgetExceededError,
     AgentLoop,
     AgentLoopConfig,
     AgentLoopError,
@@ -16,11 +15,10 @@ from .loop import (
     ToolExecutor,
 )
 from .messages import AgentMessage, ToolCall, ToolResult
-from .providers import ModelTurn, ModelTurnProvider
+from .providers import ModelTurn, ModelTurnProvider, TextDeltaSink
 
 __all__ = [
     "AgentAbortedError",
-    "AgentBudgetExceededError",
     "AgentLoop",
     "AgentLoopConfig",
     "AgentLoopError",
@@ -29,6 +27,7 @@ __all__ = [
     "AgentMessage",
     "ModelTurn",
     "ModelTurnProvider",
+    "TextDeltaSink",
     "ToolCall",
     "ToolExecutor",
     "ToolResult",

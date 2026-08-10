@@ -27,9 +27,10 @@ from app.models import (
 )
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskNotFoundError, TaskRepository
-from app.services.tasks import TaskService
 from app.services.conversation import DatabaseConversationStore
+from app.services.tasks import TaskService
 from app.workspace.preview import ArtifactPreviewError, list_artifacts, read_artifact
+from app.workspace.projects import ProjectPathError, ProjectService
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 Session = Annotated[AsyncSession, Depends(database_session)]
@@ -46,6 +47,7 @@ class TaskResponse(BaseModel):
     cancel_requested: bool
     created_at: datetime
     updated_at: datetime
+    project_id: UUID | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -60,6 +62,7 @@ class TaskResponse(BaseModel):
                 "cancel_requested": value.cancel_requested,
                 "created_at": value.created_at,
                 "updated_at": value.updated_at,
+                "project_id": value.project_id,
             }
         return value
 
@@ -76,6 +79,11 @@ async def list_tasks(
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
 async def create_task(contract: TaskContract, session: Session, request: Request) -> TaskResponse:
+    if contract.project_id is not None:
+        try:
+            await ProjectService(session, request.app.state.settings).get(contract.project_id)
+        except ProjectPathError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
     task = await TaskService(session).create(contract)
     await request.app.state.coordinator.schedule(task.id)
     return TaskResponse.model_validate(task)

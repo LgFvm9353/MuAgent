@@ -1,8 +1,8 @@
 import asyncio
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from contextvars import ContextVar
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -538,7 +538,7 @@ def register_subagent_tool(
     registry: ToolRegistry,
     manager: SubagentRunManager,
     *,
-    timeout_seconds: float = 1_800.0,
+    timeout_seconds: float = 86_400.0,
 ) -> None:
     registry.register(
         ToolDefinition[SubagentInput, SubagentOutput](

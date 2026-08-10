@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.capabilities import router as capabilities_router
 from app.api.conversations import router as conversations_router
 from app.api.memories import router as memories_router
+from app.api.projects import router as projects_router
 from app.api.tasks import router as tasks_router
 from app.api.supervisor import router as supervisor_router
 from app.config import get_settings
@@ -122,6 +123,7 @@ app.include_router(supervisor_router)
 app.include_router(conversations_router)
 app.include_router(capabilities_router)
 app.include_router(memories_router)
+app.include_router(projects_router)
 
 
 @app.get("/health", tags=["system"])

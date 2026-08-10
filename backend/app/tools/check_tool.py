@@ -39,7 +39,9 @@ class CheckCommandTool:
     ) -> None:
         self._workspace = workspace
         self._allowed = allowed
-        self._timeout = timeout_seconds
+        # Kept in the constructor for configuration compatibility. Commands are
+        # cancelled only when their owning agent/task is cancelled.
+        del timeout_seconds
         self._max_output = max_output_bytes
 
     def validate_request(self, request: CheckCommandInput) -> None:
@@ -72,17 +74,7 @@ class CheckCommandTool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self._timeout)
-        except TimeoutError:
-            process.kill()
-            stdout, stderr = await process.communicate()
-            return CheckCommandOutput(
-                exit_code=process.returncode or -1,
-                stdout=self._decode(stdout),
-                stderr=self._decode(stderr),
-                timed_out=True,
-            )
+        stdout, stderr = await process.communicate()
         return CheckCommandOutput(
             exit_code=process.returncode or 0,
             stdout=self._decode(stdout),

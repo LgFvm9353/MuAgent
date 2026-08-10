@@ -4,7 +4,6 @@ from pydantic import BaseModel
 
 from app.config import AgentId, Settings
 from app.contracts.agents import ChatAgentReply, VerificationReport
-from app.contracts.execution import ExecutionPlan
 from app.harness.registry import AgentDefinition, AgentRegistry
 
 
@@ -13,6 +12,14 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
     delegation_tools = frozenset({"subagent"})
     supervisor_tools = frozenset({"contact_supervisor", "subagent_supervisor"})
     workspace_tools = settings.mention_execution_tool_set
+    read_workspace_tools = frozenset(
+        {
+            "list_workspace_files",
+            "read_workspace_file",
+            "search_workspace_files",
+            "run_allowlisted_check",
+        }
+    ) & workspace_tools
 
     def definition(
         agent_id: AgentId,
@@ -74,6 +81,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 display_name="Scout",
                 description="Locate relevant files, entry points, data flow, and risks.",
                 capabilities=frozenset({"codebase", "recon", "analysis"}),
+                allowed_tools=read_workspace_tools,
                 mention_aliases=("侦察", "代码侦察"),
                 routing_keywords=("代码库", "调用链", "入口", "定位", "scout", "recon"),
             ),
@@ -87,19 +95,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 capabilities=frozenset({"research", "documentation", "standards"}),
                 mention_aliases=("研究员", "资料研究"),
                 routing_keywords=("官方文档", "最新", "主流", "规范", "版本", "research", "docs"),
-                allowed_tools=docs_tools,
-            ),
-            definition(
-                "planner",
-                "implementation planning and replanning",
-                display_name="Planner",
-                description="Synthesize child findings into a bounded executable plan.",
-                capabilities=frozenset({"planning", "architecture", "replanning"}),
-                mention_aliases=("规划师", "计划"),
-                routing_keywords=("计划", "规划", "方案", "架构", "怎么改", "planner", "plan"),
-                allowed_tools=docs_tools,
-                stage_prompts={"planning": "planner.txt", "replanning": "planner.txt"},
-                stage_output_models={"planning": ExecutionPlan, "replanning": ExecutionPlan},
+                allowed_tools=docs_tools | read_workspace_tools,
             ),
             definition(
                 "worker",
@@ -129,18 +125,9 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 capabilities=frozenset({"review", "testing", "security", "verification"}),
                 mention_aliases=("审查员", "评审"),
                 routing_keywords=("审查", "评审", "测试", "安全", "风险", "review", "test", "bug"),
-                allowed_tools=docs_tools,
+                allowed_tools=docs_tools | read_workspace_tools,
                 stage_prompts={"verification": "verifier.txt"},
                 stage_output_models={"verification": VerificationReport},
-            ),
-            definition(
-                "context-builder",
-                "deep context preparation and handoff material",
-                display_name="Context Builder",
-                description="Build a complete task context before planning large work.",
-                capabilities=frozenset({"context", "handoff", "codebase"}),
-                mention_aliases=("上下文构建", "上下文"),
-                routing_keywords=("完整上下文", "交接", "大型重构", "context", "handoff"),
             ),
             definition(
                 "oracle",
@@ -160,7 +147,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                     "oracle",
                     "opinion",
                 ),
-                allowed_tools=docs_tools,
+                allowed_tools=docs_tools | read_workspace_tools,
             ),
             definition(
                 "delegate",
@@ -172,7 +159,7 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
                 capabilities=frozenset({"general", "analysis", "delegation"}),
                 mention_aliases=("委派", "助手"),
                 routing_keywords=("委派", "独立处理", "帮忙", "delegate"),
-                allowed_tools=docs_tools,
+                allowed_tools=docs_tools | read_workspace_tools,
             ),
         )
     )

@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
@@ -42,8 +41,7 @@ class ToolExecutor:
         if definition.validate_input is not None:
             definition.validate_input(request)
         started = monotonic()
-        async with asyncio.timeout(definition.timeout_seconds):
-            output = await definition.handler(request)
+        output = await definition.handler(request)
         validated = definition.output_model.model_validate(output)
         serialized = validated.model_dump_json()
         if len(serialized.encode()) > definition.max_output_bytes:

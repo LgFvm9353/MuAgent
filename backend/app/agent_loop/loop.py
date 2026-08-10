@@ -19,15 +19,8 @@ class AgentAbortedError(AgentLoopError):
     pass
 
 
-class AgentBudgetExceededError(AgentLoopError):
-    pass
-
-
 @dataclass(frozen=True, slots=True)
 class AgentLoopConfig:
-    max_turns: int = 16
-    max_tool_calls: int = 64
-    max_continuations: int = 8
     parallel_tools: bool = True
     max_tokens: int = 64_000
     effort: str = "high"
@@ -155,9 +148,10 @@ class AgentLoop:
             self.transcript.append(AgentMessage("user", content))
         usage: Any | None = None
         tool_count = 0
-        continuations = 0
         last_content: Any = None
-        for turn in range(1, self.config.max_turns + 1):
+        turn = 0
+        while True:
+            turn += 1
             if self._abort.is_set():
                 raise AgentAbortedError("agent_aborted")
             while not self._steering.empty():
@@ -165,6 +159,10 @@ class AgentLoop:
                 self._messages.append({"role": "user", "content": steering})
                 self.transcript.append(AgentMessage("user", steering, {"steering": True}))
             await self._emit(AgentLoopEvent("turn_start", turn))
+
+            async def on_text_delta(delta: str, current_turn: int = turn) -> None:
+                await self._emit(AgentLoopEvent("text_delta", current_turn, {"text": delta}))
+
             model_turn = await self.provider.turn(
                 model=self.model,
                 system=self.system,
@@ -172,6 +170,7 @@ class AgentLoop:
                 tools=self.tools,
                 max_tokens=self.config.max_tokens,
                 effort=self.config.effort,
+                on_text_delta=on_text_delta if self.events is not None else None,
             )
             usage = _merge_usage(usage, model_turn.usage)
             last_content = model_turn.content
@@ -197,9 +196,6 @@ class AgentLoop:
                     last_content, tuple(self.transcript), usage, turn, tool_count
                 )
             if model_turn.stop_reason == "pause_turn":
-                continuations += 1
-                if continuations > self.config.max_continuations:
-                    raise AgentBudgetExceededError("continuation_limit_exceeded")
                 self._messages.append(
                     {"role": "user", "content": "Continue the previous response."}
                 )
@@ -209,8 +205,6 @@ class AgentLoop:
                 raise AgentLoopError("tool_use_without_tool_calls")
             if self.executor is None:
                 raise AgentLoopError("tool_executor_not_configured")
-            if tool_count + len(model_turn.tool_calls) > self.config.max_tool_calls:
-                raise AgentBudgetExceededError("tool_call_budget_exceeded")
             tool_count += len(model_turn.tool_calls)
             results = tuple(await self._execute_tools(model_turn.tool_calls, turn))
             self._messages.extend(self.provider.tool_result_messages(results))
@@ -226,7 +220,6 @@ class AgentLoop:
                         },
                     )
                 )
-        raise AgentBudgetExceededError("agent_turn_budget_exceeded")
 
     async def _execute_tools(self, calls: tuple[ToolCall, ...], turn: int) -> list[ToolResult]:
         executor = self.executor

@@ -1,7 +1,7 @@
 import { apiDateTimestamp } from './dateTime'
 import type { AgentWorkspaceState, ConversationMessage, Task, TaskEvent, WorkspaceAgentId, WorkspaceAgentState, WorkspaceAgentStatus } from '../types/api'
 
-const agentIds: WorkspaceAgentId[] = ['scout', 'researcher', 'planner', 'worker', 'reviewer', 'context-builder', 'oracle', 'delegate']
+const agentIds: WorkspaceAgentId[] = ['scout', 'researcher', 'worker', 'reviewer', 'oracle', 'delegate']
 const initialSummary: Record<WorkspaceAgentId, string> = Object.fromEntries(agentIds.map((id) => [id, 'Waiting for selection'])) as Record<WorkspaceAgentId, string>
 function initialAgent(id: WorkspaceAgentId): WorkspaceAgentState { return { id, status: 'idle', phase: 'Waiting', summary: initialSummary[id], startedAt: null, completedAt: null, updatedAt: null } }
 function copyInitialState(): AgentWorkspaceState { return Object.fromEntries(agentIds.map((id) => [id, initialAgent(id)])) as AgentWorkspaceState }

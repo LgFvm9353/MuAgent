@@ -1,7 +1,10 @@
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from .messages import ToolCall, ToolResult
+
+TextDeltaSink = Callable[[str], Awaitable[None] | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +28,7 @@ class ModelTurnProvider(Protocol):
         tools: tuple[dict[str, Any], ...],
         max_tokens: int,
         effort: str,
+        on_text_delta: TextDeltaSink | None = None,
     ) -> ModelTurn: ...
 
     def tool_result_messages(self, results: tuple[ToolResult, ...]) -> list[dict[str, Any]]: ...

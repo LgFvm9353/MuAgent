@@ -8,7 +8,7 @@ import anthropic
 from pydantic import BaseModel
 
 from app.agent_loop.messages import ToolCall, ToolResult
-from app.agent_loop.providers import ModelTurn, ModelTurnProvider
+from app.agent_loop.providers import ModelTurn, ModelTurnProvider, TextDeltaSink
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
 
@@ -64,6 +64,7 @@ class AnthropicModelProvider(ModelTurnProvider):
         tools: tuple[dict[str, Any], ...],
         max_tokens: int,
         effort: str,
+        on_text_delta: TextDeltaSink | None = None,
     ) -> ModelTurn:
         result = await self._gateway.streaming(
             model=model,
@@ -72,6 +73,7 @@ class AnthropicModelProvider(ModelTurnProvider):
             tools=tools,
             max_tokens=max_tokens,
             effort=effort,
+            on_text_delta=on_text_delta,
         )
         calls: list[ToolCall] = []
         for block in result.content:
@@ -183,6 +185,7 @@ class ModelGateway:
         tools: tuple[dict[str, Any], ...] = (),
         max_tokens: int = 64_000,
         effort: str = "high",
+        on_text_delta: TextDeltaSink | None = None,
     ) -> ModelResult:
         started = monotonic()
         response: Any | None = None
@@ -202,6 +205,12 @@ class ModelGateway:
                         thinking={"type": "adaptive"},
                         output_config=cast(Any, {"effort": effort}),
                     ) as stream:
+                        if on_text_delta is not None:
+                            async for text in stream.text_stream:
+                                if text:
+                                    result = on_text_delta(text)
+                                    if asyncio.iscoroutine(result):
+                                        await result
                         response = await stream.get_final_message()
                 break
             except Exception as error:

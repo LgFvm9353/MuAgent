@@ -27,6 +27,7 @@ class BudgetLimits(ContractModel):
 
 class TaskContract(ContractModel):
     task_id: UUID
+    project_id: UUID | None = None
     goal: str = Field(min_length=1, max_length=10_000)
     inputs: dict[str, str] = Field(default_factory=dict)
     constraints: tuple[str, ...] = ()

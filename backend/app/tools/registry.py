@@ -76,6 +76,10 @@ class ToolRegistry:
         except KeyError as error:
             raise UnknownToolError(name) from error
 
+    def definitions(self) -> tuple[ToolDefinition[Any, Any], ...]:
+        """Return registered definitions for composing a workspace registry."""
+        return tuple(self._tools.values())
+
     def names(self, *, source: ToolSource | None = None) -> frozenset[str]:
         return frozenset(
             name

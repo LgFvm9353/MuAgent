@@ -21,10 +21,8 @@ _ALL_AGENTS = frozenset(
     {
         "scout",
         "researcher",
-        "planner",
         "worker",
         "reviewer",
-        "context-builder",
         "oracle",
         "delegate",
     }

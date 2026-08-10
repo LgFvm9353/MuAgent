@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+from app.workspace.paths import iter_workspace_files
+
 _MAX_FILE_BYTES = 64 * 1024
 _MAX_TOTAL_BYTES = 256 * 1024
 _TEXT_SUFFIXES = frozenset(
@@ -29,8 +31,8 @@ def collect_text_artifacts(workspace_root: Path) -> tuple[dict[str, Any], ...]:
     artifacts: list[dict[str, Any]] = []
     total_bytes = 0
 
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink() or path.suffix.lower() not in _TEXT_SUFFIXES:
+    for path in sorted(iter_workspace_files(root)):
+        if path.suffix.lower() not in _TEXT_SUFFIXES:
             continue
         resolved = path.resolve(strict=True)
         if not resolved.is_relative_to(root):

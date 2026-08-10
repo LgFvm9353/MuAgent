@@ -2,6 +2,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
+from app.config_defaults import PROVIDER_REQUEST_TIMEOUT_SECONDS
 from app.contracts.task import RiskLevel
 
 
@@ -15,7 +16,9 @@ class McpToolPolicy(BaseModel):
 
     risk: RiskLevel
     idempotent: bool = False
-    timeout_seconds: float | None = Field(default=None, gt=0, le=300)
+    timeout_seconds: float | None = Field(
+        default=None, gt=0, le=PROVIDER_REQUEST_TIMEOUT_SECONDS
+    )
 
 
 class McpServerConfig(BaseModel):
@@ -31,7 +34,9 @@ class McpServerConfig(BaseModel):
     url: HttpUrl | None = None
     headers_from_env: dict[str, str] = Field(default_factory=dict)
     tools: dict[str, McpToolPolicy] = Field(min_length=1)
-    connect_timeout_seconds: float = Field(default=15, gt=0, le=300)
+    connect_timeout_seconds: float = Field(
+        default=300, gt=0, le=PROVIDER_REQUEST_TIMEOUT_SECONDS
+    )
 
     @model_validator(mode="after")
     def validate_transport(self) -> "McpServerConfig":

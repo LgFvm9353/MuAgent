@@ -15,6 +15,8 @@ from app.tools.file_tools import (
     FileTools,
     ListFilesInput,
     PathInput,
+    SearchFilesInput,
+    SearchFilesOutput,
     WriteFileInput,
     WriteFileOutput,
 )
@@ -25,6 +27,7 @@ DEFAULT_LOCAL_TOOL_NAMES = frozenset(
     {
         "list_workspace_files",
         "read_workspace_file",
+        "search_workspace_files",
         "create_workspace_file",
         "modify_workspace_file",
         "run_allowlisted_check",
@@ -32,7 +35,13 @@ DEFAULT_LOCAL_TOOL_NAMES = frozenset(
 )
 
 
-def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistry:
+def build_tool_registry(
+    settings: Settings,
+    workspace_root: Path,
+    *,
+    inherited: ToolRegistry | None = None,
+    inherited_exclude: frozenset[str] = frozenset(),
+) -> ToolRegistry:
     workspace = Workspace(workspace_root)
     files = FileTools(workspace)
     checks = CheckCommandTool(
@@ -84,6 +93,19 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
     )
     registry.register(
         ToolDefinition(
+            name="search_workspace_files",
+            description="Search text in UTF-8 project files and return matching paths and lines.",
+            input_model=SearchFilesInput,
+            output_model=SearchFilesOutput,
+            risk=RiskLevel.LOW,
+            timeout_seconds=30,
+            idempotent=True,
+            max_output_bytes=1024 * 1024,
+            handler=files.search_files,
+        )
+    )
+    registry.register(
+        ToolDefinition(
             name="create_workspace_file",
             description="Create a new UTF-8 file without overwriting an existing file.",
             input_model=WriteFileInput,
@@ -129,6 +151,13 @@ def build_tool_registry(settings: Settings, workspace_root: Path) -> ToolRegistr
             planning_constraints={"allowed_command_arguments": checks.planning_constraints()},
         )
     )
+    if inherited is not None:
+        for definition in inherited.definitions():
+            if (
+                definition.name not in DEFAULT_LOCAL_TOOL_NAMES
+                and definition.name not in inherited_exclude
+            ):
+                registry.register(definition)
     return registry
 
 

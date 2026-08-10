@@ -3,6 +3,7 @@ import json
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -19,7 +20,7 @@ from app.agents.routing import AgentRouter, RouteDecision
 from app.agents.runtime import AgentRuntime, StructuredGateway
 from app.config import Settings
 from app.contracts.agents import ChatAgentReply
-from app.contracts.task import TaskContract
+from app.contracts.task import RiskLevel, TaskContract
 from app.errors import safe_error_summary
 from app.harness.context import AgentContextBuilder
 from app.harness.model_gateway import ModelGateway, ModelResult
@@ -31,7 +32,7 @@ from app.harness.structured_tools import (
     structured_output_system,
 )
 from app.logging import logger
-from app.models import AgentRun
+from app.models import AgentRun, Conversation
 from app.orchestrator.execution import ExecutionService
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
@@ -53,6 +54,8 @@ from app.tools.subagent import (
     reset_supervisor_context,
     set_supervisor_context,
 )
+from app.workspace.paths import iter_workspace_files
+from app.workspace.projects import ProjectPathError, ProjectService
 from app.workspace.task_directory import (
     WorkspacePreconditionError,
     ensure_task_directory,
@@ -63,7 +66,117 @@ _SUBAGENT_DEPTH: ContextVar[int] = ContextVar("subagent_depth", default=0)
 _CURRENT_CHAT_CONTEXT: ContextVar[tuple[UUID, UUID] | None] = ContextVar(
     "current_chat_context", default=None
 )
+_CURRENT_WORKSPACE_ROOT: ContextVar[Path | None] = ContextVar(
+    "current_workspace_root", default=None
+)
 _MAX_SUBAGENT_DEPTH = 3
+
+
+def _streaming_json_text(raw: str, field: str = "text") -> str:
+    """Read a partially generated JSON string field without waiting for JSON EOF."""
+    marker = json.dumps(field, ensure_ascii=False)
+    key_start = raw.find(marker)
+    if key_start < 0:
+        return ""
+    colon = raw.find(":", key_start + len(marker))
+    if colon < 0:
+        return ""
+    quote = raw.find('"', colon + 1)
+    if quote < 0:
+        return ""
+    output: list[str] = []
+    index = quote + 1
+    escapes = {
+        "\\": "\\",
+        '"': '"',
+        "/": "/",
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+    }
+    while index < len(raw):
+        char = raw[index]
+        if char == '"':
+            break
+        if char != "\\":
+            output.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(raw):
+            break
+        escaped = raw[index + 1]
+        if escaped == "u":
+            digits = raw[index + 2 : index + 6]
+            if len(digits) < 4:
+                break
+            try:
+                output.append(chr(int(digits, 16)))
+            except ValueError:
+                break
+            index += 6
+            continue
+        output.append(escapes.get(escaped, escaped))
+        index += 2
+    return "".join(output)
+
+
+class _ChatStreamPublisher:
+    """Throttle and persist structured-output deltas for the conversation SSE."""
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        conversation_id: UUID,
+        turn_id: UUID,
+        run_id: UUID,
+        agent_id: str,
+        stream_id: str,
+    ) -> None:
+        self._store = store
+        self._conversation_id = conversation_id
+        self._turn_id = turn_id
+        self._run_id = run_id
+        self._agent_id = agent_id
+        self._stream_id = stream_id
+        self._raw = ""
+        self._published = ""
+        self._sequence = 0
+        self._last_publish = 0.0
+
+    async def handle(self, event: Any) -> None:
+        if event.type != "text_delta":
+            return
+        delta = event.data.get("text")
+        if not isinstance(delta, str) or not delta:
+            return
+        self._raw += delta
+        await self.flush()
+
+    async def flush(self, *, force: bool = False) -> None:
+        visible = _streaming_json_text(self._raw)
+        if not visible or visible == self._published:
+            return
+        now = monotonic()
+        if not force and now - self._last_publish < 0.08:
+            return
+        self._sequence += 1
+        await self._store.append(
+            self._conversation_id,
+            turn_id=self._turn_id,
+            agent_run_id=self._run_id,
+            agent_id=self._agent_id,
+            role="agent",
+            message_type="agent_delta",
+            phase="root",
+            summary=visible[-1000:],
+            content={"stream_id": self._stream_id, "text": visible, "raw": self._raw},
+            source_id=f"agent-delta:{self._stream_id}:{self._sequence}",
+        )
+        self._published = visible
+        self._last_publish = now
 
 
 class Coordinator:
@@ -184,11 +297,19 @@ class Coordinator:
         if depth >= _MAX_SUBAGENT_DEPTH:
             raise RuntimeError("subagent_depth_exceeded")
         definition = self._agents.get(agent_id)
+        effective_tools = tool_registry
+        if effective_tools is None:
+            workspace_root = _CURRENT_WORKSPACE_ROOT.get()
+            effective_tools = (
+                self._workspace_tools(workspace_root)
+                if workspace_root is not None
+                else self._chat_tools
+            )
         binding = bind_agent_tools(
-            tool_registry or self._chat_tools,
+            effective_tools,
             definition,
             ToolContext(),
-            max_calls=self._settings.collaboration_max_tool_calls_per_agent,
+            maximum_risk=RiskLevel.HIGH if definition.can_request_execution else RiskLevel.LOW,
         )
         loop = AgentLoop(
             provider=self._gateway.model_turn_provider(),
@@ -201,10 +322,7 @@ class Coordinator:
             ),
             tools=binding.schemas if binding else (),
             executor=binding.executor if binding else None,
-            config=AgentLoopConfig(
-                max_turns=self._settings.collaboration_max_tool_rounds_per_agent + 1,
-                max_tool_calls=self._settings.collaboration_max_tool_calls_per_agent,
-            ),
+            config=AgentLoopConfig(),
         )
         attach_loop(loop)
         parent = _CURRENT_AGENT_LOOP.get()
@@ -228,6 +346,23 @@ class Coordinator:
             "turns": completed.turns,
             "tool_calls": completed.tool_calls,
         }
+
+    def _workspace_tools(self, workspace_root: Path) -> ToolRegistry:
+        return build_tool_registry(
+            self._settings,
+            workspace_root,
+            inherited=self._chat_tools,
+        )
+
+    async def _project_root(self, project_id: UUID | None) -> Path | None:
+        if project_id is None:
+            return None
+        async with self._sessions() as session:
+            try:
+                project = await ProjectService(session, self._settings).get(project_id)
+            except ProjectPathError as error:
+                raise RuntimeError(str(error)) from error
+        return Path(project.root_path)
 
     async def _publish_chat_progress(
         self,
@@ -314,13 +449,20 @@ class Coordinator:
             agent_id = run.agent_id
             skill_id = run.skill_id
             turn_id = run.turn_id or turn_id
+            conversation = await session.get(Conversation, conversation_id)
+            project_id = conversation.project_id if conversation is not None else None
 
         # Keep diagnostics well-defined even when setup/context construction
         # fails before the retry loop has started.
         attempt = 1
         without_tools = False
+        stream_id: str | None = None
         try:
             definition = self._agents.get(agent_id)
+            workspace_root = (
+                await self._project_root(project_id) or self._settings.workspace_root.resolve()
+            )
+            chat_tools = self._workspace_tools(workspace_root)
             resolved_skill = None
             if skill_id is not None:
                 if self._skills is None:
@@ -340,8 +482,10 @@ class Coordinator:
             )
             binding = None
             for attempt in range(1, definition.max_retries + 2):
-                max_attempts = definition.max_retries + 1
-                without_tools = attempt == max_attempts and not definition.can_request_execution
+                # A retry is a fresh loop state, not a permission downgrade.
+                # Read-only agents still need workspace/docs tools to produce
+                # an evidence-backed answer after a transient model failure.
+                without_tools = False
                 context["orchestration"] = {
                     "run_id": str(run_id),
                     "parent_turn_id": str(turn_id),
@@ -357,23 +501,26 @@ class Coordinator:
                     active_run.attempt = attempt
                     active_run.error_type = None
                     await session.commit()
-                # A retry gets a new tool budget and no tool-loop state from the
-                # failed attempt, which is the equivalent of a fresh subagent run.
+                # A retry starts with a fresh tool-loop state from the failed attempt.
                 binding = None
                 if not without_tools:
                     binding = bind_agent_tools(
-                        self._chat_tools,
+                        chat_tools,
                         definition,
                         ToolContext(turn_id=turn_id, agent_run_id=run_id),
-                        max_calls=min(
-                            self._settings.collaboration_max_tool_calls_per_agent,
-                            resolved_skill.max_tool_calls
-                            if resolved_skill
-                            else self._settings.collaboration_max_tool_calls_per_agent,
-                        ),
                         allowed_tools=resolved_skill.allowed_tools if resolved_skill else None,
                     )
                 try:
+                    stream_id = f"{run_id}:{attempt}"
+                    stream_publisher = _ChatStreamPublisher(
+                        self._conversation_store,
+                        conversation_id=conversation_id,
+                        turn_id=turn_id,
+                        run_id=run_id,
+                        agent_id=agent_id,
+                        stream_id=stream_id,
+                    )
+
                     provider = self._gateway.model_turn_provider()
                     loop = AgentLoop(
                         provider=provider,
@@ -392,29 +539,20 @@ class Coordinator:
                         ),
                         tools=binding.schemas if binding is not None else (),
                         executor=binding.executor if binding is not None else None,
-                        config=AgentLoopConfig(
-                            max_turns=(
-                                resolved_skill.max_tool_rounds
-                                if resolved_skill
-                                else self._settings.collaboration_max_tool_rounds_per_agent
-                            )
-                            + 1,
-                            max_tool_calls=min(
-                                self._settings.collaboration_max_tool_calls_per_agent,
-                                resolved_skill.max_tool_calls
-                                if resolved_skill
-                                else self._settings.collaboration_max_tool_calls_per_agent,
-                            ),
-                        ),
+                        config=AgentLoopConfig(),
+                        events=stream_publisher.handle,
                     )
                     loop_token = _CURRENT_AGENT_LOOP.set(loop)
+                    workspace_token = _CURRENT_WORKSPACE_ROOT.set(workspace_root)
                     chat_context_token = _CURRENT_CHAT_CONTEXT.set((conversation_id, turn_id))
                     try:
                         loop_result = await loop.prompt(
                             json.dumps(context, ensure_ascii=False, sort_keys=True)
                         )
+                        await stream_publisher.flush(force=True)
                     finally:
                         _CURRENT_CHAT_CONTEXT.reset(chat_context_token)
+                        _CURRENT_WORKSPACE_ROOT.reset(workspace_token)
                         _CURRENT_AGENT_LOOP.reset(loop_token)
                     if loop_result.usage is None:
                         raise RuntimeError("agent loop returned no model usage")
@@ -470,7 +608,11 @@ class Coordinator:
                 message_type="agent_message",
                 phase="root",
                 summary=reply.text,
-                content={"text": reply.text, "subagent_run_id": str(run_id)},
+                content={
+                    "text": reply.text,
+                    "subagent_run_id": str(run_id),
+                    "stream_id": stream_id,
+                },
                 source_id=f"agent-run:{run_id}",
             )
             return {
@@ -510,6 +652,7 @@ class Coordinator:
                     "subagent_run_id": str(run_id),
                     "attempt": final_attempt,
                     "retry_exhausted": final_attempt > 1,
+                    "stream_id": stream_id,
                 },
                 source_id=f"agent-run-error:{run_id}",
             )
@@ -552,13 +695,20 @@ class Coordinator:
         bind_contextvars(task_id=str(task_id), trace_id=str(trace_id))
         try:
             contract = await self._contract(task_id)
-            workspace_root = ensure_task_directory(self._settings.workspace_root, task_id)
+            project_root = await self._project_root(contract.project_id)
+            workspace_root = project_root or ensure_task_directory(
+                self._settings.workspace_root, task_id
+            )
             workspace_files = frozenset(
                 path.relative_to(workspace_root).as_posix()
-                for path in workspace_root.rglob("*")
-                if path.is_file() and not path.is_symlink()
+                for path in iter_workspace_files(workspace_root)
             )
-            tools = build_tool_registry(self._settings, workspace_root)
+            tools = build_tool_registry(
+                self._settings,
+                workspace_root,
+                inherited=self._chat_tools,
+                inherited_exclude=frozenset({"subagent"}),
+            )
 
             async def run_task_subagent(
                 agent: str,
@@ -610,8 +760,7 @@ class Coordinator:
                 else:
                     workspace_files = frozenset(
                         path.relative_to(workspace_root).as_posix()
-                        for path in workspace_root.rglob("*")
-                        if path.is_file() and not path.is_symlink()
+                        for path in iter_workspace_files(workspace_root)
                     )
                     await orchestrator.replan(task_id, workspace_files)
                 state = await self._state(task_id)

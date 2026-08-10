@@ -1,4 +1,4 @@
-import type { ConversationMessage, ConversationThread, ConversationTurn, PendingConfirmation, SupervisorRequest, Task, TaskArtifact, TaskArtifactContent, TaskContract, TaskEvent, TaskResult } from '../types/api'
+import type { ConversationMessage, ConversationThread, ConversationTurn, PendingConfirmation, ProjectSummary, SupervisorRequest, Task, TaskArtifact, TaskArtifactContent, TaskContract, TaskEvent, TaskResult } from '../types/api'
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -55,10 +55,25 @@ export function listConversations(): Promise<ConversationThread[]> {
   return request('/conversations?limit=50&offset=0')
 }
 
-export function createConversation(title = '新对话'): Promise<ConversationThread> {
+export function listProjects(): Promise<ProjectSummary[]> {
+  return request('/projects')
+}
+
+export function createProject(path: string, name?: string): Promise<ProjectSummary> {
+  return request('/projects', {
+    method: 'POST',
+    body: JSON.stringify({ path, name: name?.trim() || undefined }),
+  })
+}
+
+export function openProjectDialog(): Promise<ProjectSummary | null> {
+  return request('/projects/open-dialog', { method: 'POST' })
+}
+
+export function createConversation(title = '新对话', projectId?: string | null): Promise<ConversationThread> {
   return request('/conversations', {
     method: 'POST',
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, project_id: projectId || null }),
   })
 }
 
@@ -68,6 +83,13 @@ export function getConversation(conversationId: string, signal?: AbortSignal): P
 
 export function getConversationMessages(conversationId: string, signal?: AbortSignal): Promise<ConversationMessage[]> {
   return request(`/conversations/${conversationId}/messages?after=0&limit=1000`, { signal })
+}
+
+export function attachConversationProject(conversationId: string, projectId: string | null): Promise<ConversationThread> {
+  return request(`/conversations/${conversationId}/project`, {
+    method: 'POST',
+    body: JSON.stringify({ project_id: projectId }),
+  })
 }
 
 export function sendConversationMessage(
@@ -169,6 +191,7 @@ export function buildTaskContract(goal: string): TaskContract {
     allowed_tools: [
       'list_workspace_files',
       'read_workspace_file',
+      'search_workspace_files',
       'create_workspace_file',
       'modify_workspace_file',
       'run_allowlisted_check',
