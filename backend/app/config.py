@@ -15,6 +15,7 @@ from app.config_defaults import (
     DEFAULT_CONTEXT_SAFETY_MARGIN_RATIO,
     DEFAULT_CONTEXT_UNKNOWN_MODEL_MAX_OUTPUT_TOKENS,
     DEFAULT_CONTEXT_UNKNOWN_MODEL_WINDOW,
+    DEFAULT_CONVERSATION_HISTORY_ROOT,
     DEFAULT_CORS_ORIGINS,
     DEFAULT_LOG_LEVEL,
     DEFAULT_MCP_CLOSE_TIMEOUT_SECONDS,
@@ -71,6 +72,7 @@ class Settings(BaseSettings):
     openai_model: str | None = None
     router_model: str | None = None
     workspace_root: Path = Path(DEFAULT_WORKSPACE_ROOT)
+    conversation_history_root: Path = Path(DEFAULT_CONVERSATION_HISTORY_ROOT)
     workspace_allowed_roots: str = DEFAULT_WORKSPACE_ALLOWED_ROOTS
     artifacts_root: Path = Path(DEFAULT_ARTIFACTS_ROOT)
     model_concurrency: int = Field(default=DEFAULT_MODEL_CONCURRENCY, ge=1, le=32)

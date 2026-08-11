@@ -23,13 +23,13 @@ from app.contracts.conversation import (
 from app.models import (
     AgentRun,
     Conversation,
-    ConversationMessage,
     ConversationTurn,
     RoutingDecision,
     Task,
 )
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskRepository
+from app.services.conversation import LocalConversationMessage
 from app.workspace.projects import ProjectPathError, ProjectService
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -108,25 +108,59 @@ async def create_turn(conversation_id: UUID, payload: ConversationTurnCreate, se
     source_id = f"user:{payload.idempotency_key}"
     if payload.text is not None:
         decision = request.app.state.coordinator.route_chat(payload.text)
+        if decision.requires_execution and conversation.project_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "这是一个需要修改实际文件的实现请求，但当前对话没有关联项目目录。"
+                    "请先使用“打开项目”选择项目目录，再重新发送请求。"
+                ),
+            )
         mode = decision.mode if decision.source == "explicit" else CollaborationMode.SINGLE
-        recommended_agents = decision.agent_ids
-        # Explicit mentions are authoritative, matching pi-subagents' direct
-        # `/run <agent>` semantics.  Without a mention, keep the supervisor as
-        # the parent entry point so it can decide whether to delegate.
-        targets = decision.agent_ids if decision.source == "explicit" else ("supervisor",)
+        # A fallback route is deliberately not a child recommendation.  The
+        # supervisor must assess complexity and choose direct, single-agent,
+        # serial, or parallel delegation itself.
+        recommended_agents = (
+            decision.agent_ids
+            if decision.source == "explicit"
+            else ("worker",)
+            if decision.requires_execution
+            else ()
+        )
+        # Every conversational request enters through the parent supervisor.
+        # Mentions are routing constraints (the supervisor must consider them),
+        # not a bypass around parent orchestration.  This is important because
+        # the parent owns parallel fan-out and the final synthesis step.
+        targets = ("supervisor",)
         if not targets: raise HTTPException(422, "no enabled agent matched the request")
         turn = ConversationTurn(conversation_id=conversation_id, idempotency_key=payload.idempotency_key,
             status="running", collaboration_mode=mode.value, collaboration_phase=mode.value,
-            synthesize=False, requires_execution=decision.requires_execution)
+            synthesize=True, requires_execution=decision.requires_execution)
         session.add(turn); await session.flush()
         route = RoutingDecision(turn_id=turn.id, source=decision.source, selected_agents=list(recommended_agents), confidence=decision.confidence, reason_code=decision.reason_code, mentions=list(decision.mentions))
         session.add(route)
-        message = ConversationMessage(conversation_id=conversation_id, turn_id=turn.id, routing_decision_id=route.id,
-            agent_id="user", role="user", message_type="user_message", phase="request", summary=payload.text[:1000],
-            content={"text": payload.text}, mentions=list(decision.mentions), routing_metadata={"source": decision.source, "confidence": decision.confidence, "reason_code": decision.reason_code, "mode": mode.value}, source_id=source_id)
-        session.add(message); conversation.updated_at = datetime.now(UTC)
+        conversation.updated_at = datetime.now(UTC)
         if conversation.title == "新对话": conversation.title = payload.text[:255]
         await session.commit()
+        await request.app.state.conversation_store.append(
+            conversation_id,
+            turn_id=turn.id,
+            routing_decision_id=route.id,
+            agent_id="user",
+            role="user",
+            message_type="user_message",
+            phase="request",
+            summary=payload.text[:1000],
+            content={"text": payload.text},
+            mentions=list(decision.mentions),
+            routing_metadata={
+                "source": decision.source,
+                "confidence": decision.confidence,
+                "reason_code": decision.reason_code,
+                "mode": mode.value,
+            },
+            source_id=source_id,
+        )
         runs = []
         for agent_id in targets:
             definition = request.app.state.coordinator.agent_definition(agent_id)
@@ -142,9 +176,10 @@ async def create_turn(conversation_id: UUID, payload: ConversationTurnCreate, se
                 conversation_id=conversation_id,
                 turn_id=turn.id,
                 recommended_agents=tuple(recommended_agents),
+                route_source=decision.source,
             )
         return ConversationTurnResponse(turn_id=turn.id, conversation_id=conversation_id, state=turn.status, route_source=decision.source,
-            collaboration_mode=mode, synthesize=False, selected_agents=tuple(targets),
+            collaboration_mode=mode, synthesize=True, selected_agents=tuple(targets),
             agent_runs=tuple(AgentRunResponse(id=run.id, agent_id=run.agent_id, model=run.model, status=run.status) for run in runs))
     contract = payload.contract; assert contract is not None
     latest = await _latest_task(session, conversation_id)
@@ -153,14 +188,25 @@ async def create_turn(conversation_id: UUID, payload: ConversationTurnCreate, se
     task = Task(id=contract.task_id, conversation_id=conversation_id, project_id=project_id,
         trace_id=payload.idempotency_key, contract=contract.model_copy(update={"project_id": project_id}).model_dump(mode="json"))
     await TaskRepository(session).add(task); await session.flush()
-    session.add(ConversationMessage(task_id=task.id, conversation_id=conversation_id, agent_id="user", role="user", message_type="user_message", phase="request", summary=contract.goal[:1000], content={"text": contract.goal}, source_id=source_id))
     conversation.updated_at = datetime.now(UTC)
     if conversation.title == "新对话": conversation.title = contract.goal[:255]
-    await session.commit(); await request.app.state.coordinator.schedule(task.id)
+    await session.commit()
+    await request.app.state.conversation_store.append(
+        conversation_id,
+        task_id=task.id,
+        agent_id="user",
+        role="user",
+        message_type="user_message",
+        phase="request",
+        summary=contract.goal[:1000],
+        content={"text": contract.goal},
+        source_id=source_id,
+    )
+    await request.app.state.coordinator.schedule(task.id)
     return ConversationTurnResponse(task_id=task.id, conversation_id=conversation_id, state=task.state)
 
 
-def _message_payload(message: ConversationMessage) -> dict[str, Any]:
+def _message_payload(message: LocalConversationMessage) -> dict[str, Any]:
     return {"id": message.id, "task_id": message.task_id, "conversation_id": message.conversation_id, "turn_id": message.turn_id, "agent_run_id": message.agent_run_id, "routing_decision_id": message.routing_decision_id, "reply_to_message_id": message.reply_to_message_id, "agent_id": message.agent_id, "role": message.role, "message_type": message.message_type, "phase": message.phase, "summary": message.summary, "content": message.content, "mentions": message.mentions, "routing_metadata": message.routing_metadata, "source_id": message.source_id, "created_at": message.created_at}
 
 
@@ -174,10 +220,15 @@ def _sse(event: str, data: dict[str, Any], *, event_id: int | None = None) -> st
 
 
 @router.get("/{conversation_id}/messages")
-async def conversation_messages(conversation_id: UUID, session: Session, after: Annotated[int, Query(ge=0)] = 0,
+async def conversation_messages(conversation_id: UUID, session: Session, request: Request, after: Annotated[int, Query(ge=0)] = 0,
                                 limit: Annotated[int, Query(ge=1, le=1000)] = 500) -> list[dict[str, Any]]:
     if await session.get(Conversation, conversation_id) is None: raise HTTPException(404, "conversation not found")
-    rows = list(await session.scalars(select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id, ConversationMessage.id > after, ConversationMessage.message_type != "agent_delta").order_by(ConversationMessage.id).limit(limit)))
+    rows = await request.app.state.conversation_store.list_messages(
+        conversation_id,
+        after=after,
+        limit=limit,
+        exclude_types=frozenset({"agent_delta"}),
+    )
     return [_message_payload(row) for row in rows]
 
 
@@ -198,8 +249,11 @@ async def stream_conversation(conversation_id: UUID, request: Request, after: An
         since_heartbeat = 0.0
         yield "retry: 1000\n\n"
         while not await request.is_disconnected():
-            async with request.app.state.database.session_factory() as session:
-                rows = list(await session.scalars(select(ConversationMessage).where(ConversationMessage.conversation_id == conversation_id, ConversationMessage.id > cursor).order_by(ConversationMessage.id)))
+            rows = await request.app.state.conversation_store.list_messages(
+                conversation_id,
+                after=cursor,
+                limit=500,
+            )
             for row in rows:
                 cursor = row.id
                 yield _sse("message", _message_payload(row), event_id=row.id)

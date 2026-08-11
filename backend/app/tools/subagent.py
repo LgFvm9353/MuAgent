@@ -1,8 +1,10 @@
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -17,6 +19,10 @@ SubagentAction = Literal["run", "all", "status", "wait", "steer", "stop"]
 ContextMode = Literal["fresh", "fork"]
 RunStatus = Literal["queued", "running", "completed", "failed", "stopped"]
 SupervisorReason = Literal["need_decision", "interview_request", "progress_update"]
+OutputMode = Literal["inline", "file-only"]
+
+DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024
+DEFAULT_MAX_OUTPUT_LINES = 5_000
 
 _CURRENT_SUPERVISOR_RUN: ContextVar[str | None] = ContextVar(
     "current_supervisor_run", default=None
@@ -227,6 +233,13 @@ async def supervisor_control(
     return SupervisorControlOutput(status="replied", request_id=item.request_id, reply=item.reply)
 
 
+class MaxOutputConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bytes: int = Field(default=DEFAULT_MAX_OUTPUT_BYTES, ge=1)
+    lines: int = Field(default=DEFAULT_MAX_OUTPUT_LINES, ge=1)
+
+
 class SubagentTaskInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -234,6 +247,11 @@ class SubagentTaskInput(BaseModel):
     agent: str = Field(min_length=1, max_length=100)
     task: str = Field(min_length=1, max_length=50_000)
     context: ContextMode = "fresh"
+    max_output: MaxOutputConfig = Field(default_factory=MaxOutputConfig)
+    output: str | None = Field(default=None, min_length=1, max_length=500)
+    output_mode: OutputMode = "inline"
+    artifacts: bool = True
+    include_progress: bool = False
 
 
 class SubagentInput(BaseModel):
@@ -249,6 +267,11 @@ class SubagentInput(BaseModel):
     mode: Literal["steer", "follow_up"] = "steer"
     background: bool = False
     concurrency: int = Field(default=4, ge=1, le=16)
+    max_output: MaxOutputConfig = Field(default_factory=MaxOutputConfig)
+    output: str | None = Field(default=None, min_length=1, max_length=500)
+    output_mode: OutputMode = "inline"
+    artifacts: bool = True
+    include_progress: bool = False
 
     @model_validator(mode="after")
     def validate_action(self) -> "SubagentInput":
@@ -274,6 +297,8 @@ class SubagentOutput(BaseModel):
     result: Any | None = None
     runs: tuple[dict[str, Any], ...] = ()
     error: dict[str, str] | None = None
+    output_file: str | None = None
+    truncated: bool = False
 
 
 AttachLoop = Callable[[AgentLoop], None]
@@ -294,6 +319,53 @@ class _RunRecord:
     loop: AgentLoop | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    max_output: MaxOutputConfig = field(default_factory=MaxOutputConfig)
+    output: str | None = None
+    output_mode: OutputMode = "inline"
+    artifacts: bool = True
+    include_progress: bool = False
+    output_file: str | None = None
+    truncated: bool = False
+
+
+def _format_bytes(value: int) -> str:
+    if value < 1024:
+        return f"{value}B"
+    if value < 1024 * 1024:
+        return f"{value / 1024:.1f}KB"
+    return f"{value / (1024 * 1024):.1f}MB"
+
+
+def _truncate_output(
+    output: str,
+    max_bytes: int,
+    max_lines: int,
+    artifact_path: str | None = None,
+) -> tuple[str, bool]:
+    """Port pi-subagents' first-lines/byte bounded final-output behavior."""
+    lines = output.split("\n")
+    byte_count = len(output.encode("utf-8"))
+    if byte_count <= max_bytes and len(lines) <= max_lines:
+        return output, False
+    kept = lines[:max_lines]
+    result = "\n".join(kept)
+    if len(result.encode("utf-8")) > max_bytes:
+        low = 0
+        high = len(result)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if len(result[:middle].encode("utf-8")) <= max_bytes:
+                low = middle
+            else:
+                high = middle - 1
+        result = result[:low]
+    kept_lines = len(result.split("\n"))
+    marker = (
+        f"[TRUNCATED: showing first {kept_lines} of {len(lines)} lines, "
+        f"{_format_bytes(len(result.encode('utf-8')))} of {_format_bytes(byte_count)}"
+        f"{f' - full output at {artifact_path}' if artifact_path else ''}]\n"
+    )
+    return marker + result, True
 
 
 class SubagentRunManager:
@@ -304,11 +376,13 @@ class SubagentRunManager:
         runner: ChildRunner,
         *,
         supervisor_inbox: SupervisorInbox | None = None,
+        artifact_root: Path | None = None,
     ) -> None:
         self._runner = runner
         self._supervisor_inbox = supervisor_inbox
         self._runs: dict[str, _RunRecord] = {}
         self._groups: dict[str, tuple[str, ...]] = {}
+        self._artifact_root = artifact_root.resolve() if artifact_root is not None else None
 
     async def close(self) -> None:
         operations = [
@@ -329,6 +403,11 @@ class SubagentRunManager:
                 agent=request.agent,
                 task=request.task,
                 context=request.context,
+                max_output=request.max_output,
+                output=request.output,
+                output_mode=request.output_mode,
+                artifacts=request.artifacts,
+                include_progress=request.include_progress,
             )
             if request.background:
                 return SubagentOutput(action="run", run_id=record.id, status=record.status)
@@ -344,6 +423,11 @@ class SubagentRunManager:
                     task=item.task,
                     context=item.context,
                     semaphore=semaphore,
+                    max_output=item.max_output,
+                    output=item.output,
+                    output_mode=item.output_mode,
+                    artifacts=item.artifacts,
+                    include_progress=item.include_progress,
                 )
                 for item in request.tasks
             )
@@ -433,9 +517,25 @@ class SubagentRunManager:
         task: str,
         context: ContextMode,
         semaphore: asyncio.Semaphore | None = None,
+        max_output: MaxOutputConfig | None = None,
+        output: str | None = None,
+        output_mode: OutputMode = "inline",
+        artifacts: bool = True,
+        include_progress: bool = False,
     ) -> _RunRecord:
         run_id = str(uuid4())
-        record = _RunRecord(run_id, key, agent, task, context)
+        record = _RunRecord(
+            run_id,
+            key,
+            agent,
+            task,
+            context,
+            max_output=max_output or MaxOutputConfig(),
+            output=output,
+            output_mode=output_mode,
+            artifacts=artifacts,
+            include_progress=include_progress,
+        )
         self._runs[run_id] = record
 
         async def operation() -> dict[str, Any]:
@@ -461,9 +561,9 @@ class SubagentRunManager:
                             context,
                             lambda loop: setattr(record, "loop", loop),
                         )
-                record.result = result
+                record.result = self._capture_result(record, result)
                 record.status = "completed"
-                return result
+                return record.result
             except asyncio.CancelledError:
                 record.status = "stopped"
                 raise
@@ -477,6 +577,62 @@ class SubagentRunManager:
 
         record.operation = asyncio.create_task(operation(), name=f"subagent:{run_id}")
         return record
+
+    def _capture_result(self, record: _RunRecord, result: dict[str, Any]) -> dict[str, Any]:
+        """Apply pi-subagents' bounded final-output and file-only semantics."""
+        projected = dict(result)
+        text = result.get("text")
+        output_text = (
+            text
+            if isinstance(text, str)
+            else json.dumps(result, ensure_ascii=False, default=str)
+        )
+        artifact_dir = self._artifact_root / record.id if self._artifact_root is not None else None
+        output_path: Path | None = None
+        if record.output_mode == "file-only" or record.output is not None or record.artifacts:
+            if artifact_dir is not None:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                if record.output is not None:
+                    requested = Path(record.output)
+                    output_path = requested if requested.is_absolute() else artifact_dir / requested
+                else:
+                    output_path = artifact_dir / f"{record.agent}-output.md"
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(output_text, encoding="utf-8")
+                record.output_file = str(output_path)
+                (artifact_dir / f"{record.agent}-result.json").write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                worktree = projected.get("worktree")
+                if (
+                    isinstance(worktree, dict)
+                    and isinstance(worktree.get("patch"), str)
+                    and worktree["patch"]
+                ):
+                    patch_path = artifact_dir / f"{record.agent}-patch.diff"
+                    patch_path.write_text(worktree["patch"], encoding="utf-8")
+                    projected["worktree"] = {
+                        **worktree,
+                        "patch": "",
+                        "patch_path": str(patch_path),
+                    }
+        if isinstance(text, str):
+            truncated = _truncate_output(
+                text,
+                record.max_output.bytes,
+                record.max_output.lines,
+                record.output_file,
+            )
+            record.truncated = truncated[1]
+            if record.output_mode == "file-only" and output_path is not None:
+                projected["text"] = f"Output saved to: {output_path}"
+            else:
+                projected["text"] = truncated[0]
+            if record.output_mode == "file-only":
+                projected["output_file"] = record.output_file
+                projected["truncated"] = record.truncated
+        return projected
 
     @staticmethod
     async def _wait(record: _RunRecord) -> None:
@@ -522,6 +678,8 @@ class SubagentRunManager:
             "status": record.status,
             "result": record.result,
             "error": record.error,
+            "output_file": record.output_file,
+            "truncated": record.truncated,
         }
 
     def _single_output(self, action: SubagentAction, record: _RunRecord) -> SubagentOutput:
@@ -531,6 +689,8 @@ class SubagentRunManager:
             status=record.status,
             result=record.result,
             error={"code": record.error} if record.error else None,
+            output_file=record.output_file,
+            truncated=record.truncated,
         )
 
 

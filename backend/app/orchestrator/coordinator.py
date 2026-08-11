@@ -32,12 +32,12 @@ from app.harness.structured_tools import (
     structured_output_system,
 )
 from app.logging import logger
-from app.models import AgentRun, Conversation
+from app.models import AgentRun, Conversation, ConversationTurn
 from app.orchestrator.execution import ExecutionService
 from app.orchestrator.service import OrchestratorService
 from app.orchestrator.state_machine import TaskState
 from app.repositories import TaskNotFoundError, TaskRepository
-from app.services.conversation import ConversationService, DatabaseConversationStore
+from app.services.conversation import ConversationService, JsonConversationStore
 from app.services.final_summary import FinalSummaryService
 from app.skills.registry import SkillRegistry
 from app.skills.resolver import SkillResolver
@@ -59,6 +59,11 @@ from app.workspace.projects import ProjectPathError, ProjectService
 from app.workspace.task_directory import (
     WorkspacePreconditionError,
     ensure_task_directory,
+)
+from app.workspace.worktrees import (
+    cleanup_worktree,
+    collect_handoff,
+    prepare_worktree,
 )
 
 _CURRENT_AGENT_LOOP: ContextVar[AgentLoop | None] = ContextVar("current_agent_loop", default=None)
@@ -194,7 +199,9 @@ class Coordinator:
         self._prompts_root = prompts_root
         self._chat_tools = tool_registry
         self._skills = skill_registry
-        self._conversation_store = DatabaseConversationStore(sessions)
+        self._conversation_store = conversation_store or JsonConversationStore(
+            settings.conversation_history_root
+        )
         self._active: dict[UUID, asyncio.Task[Any]] = {}
         self._lock = asyncio.Lock()
         self._client: openai.AsyncOpenAI | anthropic.AsyncAnthropic
@@ -297,18 +304,36 @@ class Coordinator:
         if depth >= _MAX_SUBAGENT_DEPTH:
             raise RuntimeError("subagent_depth_exceeded")
         definition = self._agents.get(agent_id)
+        source_workspace = _CURRENT_WORKSPACE_ROOT.get()
+        # Conversational workers must edit the project the user opened.  A
+        # detached worktree is reserved for the durable task path, where the
+        # execution layer owns patch application and verification.
+        use_worktree = _CURRENT_CHAT_CONTEXT.get() is None
+        worktree = (
+            prepare_worktree(source_workspace, self._settings.artifacts_root, agent_id)
+            if source_workspace is not None and use_worktree
+            else None
+        )
+        child_workspace = worktree.path if worktree is not None else source_workspace
         effective_tools = tool_registry
-        if effective_tools is None:
-            workspace_root = _CURRENT_WORKSPACE_ROOT.get()
+        if worktree is not None and child_workspace is not None:
+            # Rebind local file/check tools to the isolated checkout.  The
+            # inherited registry is still used for non-local integrations.
+            effective_tools = self._workspace_tools(child_workspace)
+        elif effective_tools is None:
             effective_tools = (
-                self._workspace_tools(workspace_root)
-                if workspace_root is not None
+                self._workspace_tools(child_workspace)
+                if child_workspace is not None
                 else self._chat_tools
             )
         binding = bind_agent_tools(
             effective_tools,
             definition,
             ToolContext(),
+            # A child can report to its parent, but cannot create a second
+            # orchestration tree.  Only the root supervisor owns fan-out.
+            allowed_tools=definition.allowed_tools
+            - frozenset({"subagent", "subagent_supervisor"}),
             maximum_risk=RiskLevel.HIGH if definition.can_request_execution else RiskLevel.LOW,
         )
         loop = AgentLoop(
@@ -330,11 +355,18 @@ class Coordinator:
             loop.inherit_context(parent)
         depth_token = _SUBAGENT_DEPTH.set(depth + 1)
         loop_token = _CURRENT_AGENT_LOOP.set(loop)
+        workspace_token = _CURRENT_WORKSPACE_ROOT.set(child_workspace)
+        completed = None
         try:
             completed = await loop.prompt(task)
         finally:
+            _CURRENT_WORKSPACE_ROOT.reset(workspace_token)
             _CURRENT_AGENT_LOOP.reset(loop_token)
             _SUBAGENT_DEPTH.reset(depth_token)
+            handoff = collect_handoff(worktree) if worktree is not None else None
+            cleanup_worktree(worktree)
+        if completed is None:
+            raise RuntimeError("child loop returned no result")
         content = completed.content
         if not isinstance(self._gateway, OpenAIModelGateway):
             content = anthropic_text(content)
@@ -345,6 +377,16 @@ class Coordinator:
             "context_mode": context_mode,
             "turns": completed.turns,
             "tool_calls": completed.tool_calls,
+            "worktree": (
+                {
+                    "isolated": handoff.isolated,
+                    "branch": handoff.branch,
+                    "changed_files": handoff.changed_files,
+                    "patch": handoff.patch,
+                }
+                if handoff is not None
+                else {"isolated": False, "changed_files": (), "patch": ""}
+            ),
         }
 
     def _workspace_tools(self, workspace_root: Path) -> ToolRegistry:
@@ -381,7 +423,11 @@ class Coordinator:
             phase="specialist",
             summary=summary,
             content={"status": status, "text": summary},
-            source_id=f"chat-progress:{turn_id}:{agent_id}:{status}:{uuid4()}",
+            # ``conversation_messages.source_id`` is VARCHAR(100).  UUIDs in
+            # their dashed form made this progress key exceed the column and
+            # caused every child run to fail with sqlalchemy DataError before
+            # the worker could use any workspace tools.
+            source_id=f"chat:{turn_id.hex}:{agent_id}:{status}:{uuid4().hex[:8]}",
         )
 
     @property
@@ -410,6 +456,7 @@ class Coordinator:
         conversation_id: UUID,
         turn_id: UUID,
         recommended_agents: tuple[str, ...] = (),
+        route_source: str = "fallback",
     ) -> None:
         operation = asyncio.create_task(
             self._run_chat_agent(
@@ -418,6 +465,7 @@ class Coordinator:
                 conversation_id=conversation_id,
                 turn_id=turn_id,
                 recommended_agents=recommended_agents,
+                route_source=route_source,
             ),
             name=f"root-agent:{turn_id}",
         )
@@ -438,6 +486,7 @@ class Coordinator:
         conversation_id: UUID,
         turn_id: UUID,
         recommended_agents: tuple[str, ...],
+        route_source: str,
     ) -> dict[str, Any] | None:
         async with self._sessions() as session:
             run = await session.get(AgentRun, run_id)
@@ -472,7 +521,9 @@ class Coordinator:
                     agent_id=agent_id,
                     agent_tools=definition.allowed_tools,
                 )
-            history = await ConversationService(self._sessions).relevant_history(
+            history = await ConversationService(
+                self._sessions, self._conversation_store
+            ).relevant_history(
                 conversation_id, turn_id
             )
             context = AgentContextBuilder().chat(
@@ -490,6 +541,32 @@ class Coordinator:
                     "run_id": str(run_id),
                     "parent_turn_id": str(turn_id),
                     "recommended_agents": recommended_agents,
+                    "required_delegations": (
+                        recommended_agents
+                        if recommended_agents and recommended_agents != ("delegate",)
+                        else ()
+                    ),
+                    "delegation_policy": (
+                        "This is the parent supervisor entry point. Every explicit @mention "
+                        "is a mandatory child-agent target; use subagent action=run for one "
+                        "target or action=all for multiple targets, then synthesize their "
+                        "results into one answer. Never answer as a mentioned child directly."
+                        if route_source == "explicit"
+                        else "This is an implementation request. A worker delegation is "
+                        "mandatory: use subagent action=run for worker, require it to use the "
+                        "workspace file tools, and synthesize the actual changed-file and "
+                        "validation evidence. Do not answer with a code listing instead of "
+                        "performing the file change."
+                        if recommended_agents == ("worker",)
+                        else "You are the parent supervisor. Judge task complexity before "
+                        "delegating: answer simple questions directly; use one specialist for a "
+                        "focused task; use action=all only for independent dimensions; use serial "
+                        "delegation when "
+                        "one result is required by the next. For implementation requests, delegate "
+                        "to worker only when a real file change is needed, and choose additional "
+                        "scout/researcher/reviewer agents only when their work materially improves "
+                        "the result. Then synthesize one final answer."
+                    ),
                     "available_agents": self._subagent_catalog(),
                     "attempt": attempt,
                     "max_attempts": definition.max_retries + 1,
@@ -581,6 +658,20 @@ class Coordinator:
                     await asyncio.sleep(retry_delay_seconds(attempt))
             if result.parsed_output is None:
                 raise RuntimeError("agent returned no chat reply")
+            if recommended_agents == ("worker",):
+                progress_rows = await self._conversation_store.list_messages(
+                    conversation_id,
+                    limit=100_000,
+                )
+                worker_completed = any(
+                    row.agent_id == "worker"
+                    and row.message_type == "collaboration"
+                    and row.turn_id == turn_id
+                    and row.content.get("status") == "completed"
+                    for row in progress_rows
+                )
+                if not worker_completed:
+                    raise RuntimeError("required_worker_delegation_failed")
             reply = ChatAgentReply.model_validate(result.parsed_output)
             async with self._sessions() as session:
                 run = await session.get(AgentRun, run_id)
@@ -598,6 +689,10 @@ class Coordinator:
                     "retry_exhausted": False,
                 }
                 run.completed_at = datetime.now(UTC)
+                turn = await session.get(ConversationTurn, turn_id)
+                if turn is not None:
+                    turn.status = "completed"
+                    turn.collaboration_phase = "synthesis"
                 await session.commit()
             await self._conversation_store.append(
                 conversation_id,
@@ -637,6 +732,9 @@ class Coordinator:
                         "retry_exhausted": final_attempt > 1,
                     }
                     run.completed_at = datetime.now(UTC)
+                    turn = await session.get(ConversationTurn, turn_id)
+                    if turn is not None:
+                        turn.status = "failed"
                     await session.commit()
             await self._conversation_store.append(
                 conversation_id,
@@ -724,9 +822,14 @@ class Coordinator:
                     tool_registry=tools,
                 )
 
-            task_subagents = SubagentRunManager(run_task_subagent)
+            task_subagents = SubagentRunManager(
+                run_task_subagent,
+                artifact_root=self._settings.artifacts_root / "subagents",
+            )
             register_subagent_tool(tools, task_subagents)
-            conversation_sink = ConversationService(self._sessions).sink(task_id)
+            conversation_sink = ConversationService(
+                self._sessions, self._conversation_store
+            ).sink(task_id)
             runtime = AgentRuntime(
                 self._gateway,
                 self._agents,

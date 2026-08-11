@@ -165,5 +165,6 @@ def ensure_storage_roots(settings: Settings) -> None:
     for root in (
         settings.workspace_root,
         settings.artifacts_root,
+        settings.conversation_history_root,
     ):
         Path(root).mkdir(parents=True, exist_ok=True)

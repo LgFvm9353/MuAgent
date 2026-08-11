@@ -10,6 +10,7 @@ _MENTION = re.compile(r"(?<![\w@])@([\w-]+)", re.UNICODE)
 _SIDE_EFFECT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
+        r"(?:实现|开发|搭建|构建|写一个|写个|创建一个|新建|生成|增加|添加|接入|集成).{0,48}(?:系统|功能|页面|组件|接口|项目|应用|登录|注册|代码|文件|服务|模块)",
         r"(?:修改|编辑|写入|创建|删除|覆盖).{0,12}(?:文件|代码|配置|数据库)",
         r"(?:运行|执行).{0,8}(?:命令|脚本|测试|部署|迁移)",
         r"(?:commit|push|deploy|delete|remove|write|execute|run)\b",

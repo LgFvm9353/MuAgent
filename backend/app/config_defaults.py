@@ -6,6 +6,7 @@ databases and origins) remain configurable through ``.env``.
 """
 
 DEFAULT_WORKSPACE_ROOT = "data/workspaces"
+DEFAULT_CONVERSATION_HISTORY_ROOT = "data/conversations"
 DEFAULT_WORKSPACE_ALLOWED_ROOTS = ""
 DEFAULT_ARTIFACTS_ROOT = "data/artifacts"
 DEFAULT_MODEL_CONCURRENCY = 4

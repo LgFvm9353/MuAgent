@@ -27,7 +27,6 @@ from app.models import (
 )
 from app.orchestrator.state_machine import TERMINAL_STATES
 from app.repositories import TaskNotFoundError, TaskRepository
-from app.services.conversation import DatabaseConversationStore
 from app.services.tasks import TaskService
 from app.workspace.preview import ArtifactPreviewError, list_artifacts, read_artifact
 from app.workspace.projects import ProjectPathError, ProjectService
@@ -113,7 +112,7 @@ class ArtifactContentResponse(ArtifactResponse):
 @router.get("/{task_id}/artifacts", response_model=list[ArtifactResponse])
 async def task_artifacts(task_id: UUID, session: Session) -> list[ArtifactResponse]:
     try:
-        task = await TaskRepository(session).get(task_id)
+        await TaskRepository(session).get(task_id)
     except TaskNotFoundError as error:
         raise HTTPException(status_code=404, detail="task not found") from error
     settings = get_settings()
@@ -299,14 +298,21 @@ class ConversationMessageResponse(BaseModel):
 async def task_messages(
     task_id: UUID,
     session: Session,
+    request: Request,
     after: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[dict[str, Any]]:
     try:
-        await TaskRepository(session).get(task_id)
+        task = await TaskRepository(session).get(task_id)
     except TaskNotFoundError as error:
         raise HTTPException(status_code=404, detail="task not found") from error
-    return await TaskRepository(session).messages(task_id, after=after, limit=limit)
+    messages = await request.app.state.conversation_store.task_messages(
+        task.conversation_id,
+        task_id,
+        after=after,
+        limit=limit,
+    )
+    return [item.model_dump(mode="json") for item in messages]
 
 
 class AuditResponse(BaseModel):
@@ -409,7 +415,11 @@ async def stream_task_events(
                 repository = TaskRepository(session)
                 task = await repository.get(task_id)
                 events = await repository.timeline_after(task_id, after=cursor)
-                messages = await repository.messages(task_id, after=message_cursor)
+            messages = await request.app.state.conversation_store.task_messages(
+                task.conversation_id,
+                task_id,
+                after=message_cursor,
+            )
 
             stream_items = [
                 (event.created_at, 0, event.id, "task_event", _event_data(event))
@@ -451,7 +461,7 @@ async def stream_task_events(
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
 async def cancel_task(task_id: UUID, session: Session, request: Request) -> TaskResponse:
     try:
-        task = await TaskService(session, DatabaseConversationStore(request.app.state.database.session_factory)).cancel(task_id)
+        task = await TaskService(session, request.app.state.conversation_store).cancel(task_id)
     except TaskNotFoundError as error:
         raise HTTPException(status_code=404, detail="task not found") from error
     await request.app.state.coordinator.cancel(task_id)

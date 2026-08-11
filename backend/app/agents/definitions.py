@@ -40,8 +40,9 @@ def build_agent_registry(settings: Settings, prompts_root: Path) -> AgentRegistr
             role=role,
             model=settings.agent_model(agent_id),
             prompt_path=prompts_root / "subagents" / f"{agent_id}.txt",
-            # v3 aligns the role prompts with the pi-subagents builtin contracts.
-            prompt_version="v3",
+            # v4 aligns the role prompts with the pi-subagents contracts while
+            # preserving this project's structured-output and permission model.
+            prompt_version="v4",
             schema_version="v2",
             output_model=ChatAgentReply,
             allowed_tools=allowed_tools | supervisor_tools,

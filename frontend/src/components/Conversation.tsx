@@ -5,8 +5,12 @@ import { AgentMessage } from './AgentMessage'
 
 const bottomThreshold = 96
 const agentNames: Record<WorkspaceAgentId, string> = {
-  scout: 'Scout', researcher: 'Researcher', worker: 'Worker',
-  reviewer: 'Reviewer', oracle: 'Oracle', delegate: 'Delegate',
+  scout: 'Scout',
+  researcher: 'Researcher',
+  worker: 'Worker',
+  reviewer: 'Reviewer',
+  oracle: 'Oracle',
+  delegate: 'Delegate',
 }
 
 type AgentProgressItem = { id: WorkspaceAgentId; status: WorkspaceAgentStatus }
@@ -15,13 +19,28 @@ function AgentProgress({ agents }: { agents: AgentProgressItem[] }) {
   const running = agents.filter((agent) => agent.status === 'running' || agent.status === 'waiting')
   const completed = agents.filter((agent) => agent.status === 'completed')
   const failed = agents.filter((agent) => agent.status === 'failed')
-  const names = (items: AgentProgressItem[]) => items.map((agent) => agentNames[agent.id] || agent.id).join('、')
+  const names = (items: AgentProgressItem[]) => items.map((agent) => agentNames[agent.id] || agent.id).join(' · ')
+  const current = running.length > 0 ? running : completed.length > 0 ? completed : failed
+  const currentNames = names(current)
+  const currentStatus = running.length > 0 ? 'running' : failed.length > 0 ? 'failed' : 'completed'
+
   return <div className="message-row agent-progress-row" role="status" aria-live="polite">
     <div className="avatar"><Bot size={17}/></div>
     <div className="agent-progress-message">
-      {running.length > 0 && <div className="agent-progress-line agent-progress-running"><LoaderCircle size={14} className="agent-status-spinner"/><strong>正在工作：{names(running)}</strong></div>}
-      {completed.length > 0 && <div className="agent-progress-line agent-progress-completed"><Check size={14}/><strong>已完成：{names(completed)}</strong></div>}
-      {failed.length > 0 && <div className="agent-progress-line agent-progress-failed"><TriangleAlert size={14}/><strong>执行失败：{names(failed)}</strong></div>}
+      <div className={`agent-progress-line agent-progress-${currentStatus}`}>
+        {currentStatus === 'running'
+          ? <LoaderCircle size={14} className="agent-status-spinner"/>
+          : currentStatus === 'failed' ? <TriangleAlert size={14}/> : <Check size={14}/>}
+        <strong>
+          {currentStatus === 'running'
+            ? 'Supervisor 正在协作'
+            : currentStatus === 'failed' ? '协作需要重试' : 'Supervisor 已完成协作'}
+        </strong>
+        <span className="agent-progress-current">{currentNames}</span>
+        {currentStatus === 'running' && <LoaderCircle size={13} className="agent-progress-trailing-spinner agent-status-spinner"/>}
+      </div>
+      {completed.length > 0 && currentStatus === 'running' && <small className="agent-progress-meta">已完成：{names(completed)}</small>}
+      {failed.length > 0 && currentStatus === 'running' && <small className="agent-progress-meta agent-progress-meta-failed">失败：{names(failed)}</small>}
     </div>
   </div>
 }
@@ -47,7 +66,7 @@ export function Conversation({ messages, loading, error, onRetry, progressAgents
 
   useEffect(() => {
     const scroller = rootRef.current?.closest('.message-panel')
-    if (!(scroller instanceof HTMLElement) || messages.length === 0) return
+    if (!(scroller instanceof HTMLElement) || (messages.length === 0 && progressAgents.length === 0)) return
     if (!initialized.current) {
       initialized.current = true
       scroller.scrollTop = scroller.scrollHeight

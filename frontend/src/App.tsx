@@ -262,7 +262,10 @@ function Workbench() {
         phase: 'supervisor',
         supervisorRequest: request,
       }))
-      return [...conversation.map(conversationToMessage), ...inlineRequests]
+      // Collaboration lifecycle events are rendered by one aggregated
+      // supervisor progress card, not as separate chat bubbles.
+      const visibleConversation = conversation.filter((message) => message.message_type !== 'collaboration')
+      return [...visibleConversation.map(conversationToMessage), ...inlineRequests]
         .sort(compareChatMessages)
     },
     [conversation, supervisorRequests],
@@ -289,7 +292,9 @@ function Workbench() {
     if (!selected) return false
     setBusy(true)
     const mentioned = Array.from(goal.matchAll(/(?:^|\s)@(scout|researcher|worker|reviewer|oracle|delegate)(?=\s|$)/g), (match) => match[1] as WorkspaceAgentId)
-    const selectedAgents: WorkspaceAgentId[] = mentioned.length > 0 ? mentioned : ['delegate']
+    // Without an explicit mention the supervisor owns complexity assessment;
+    // do not display a fabricated delegate child before the server routes it.
+    const selectedAgents: WorkspaceAgentId[] = mentioned.length > 0 ? mentioned : []
     setOptimisticWorkingAgents(selectedAgents.map((id) => ({ id, status: 'running' })))
     try {
       const turn = await sendConversationMessage(selected.id, goal)

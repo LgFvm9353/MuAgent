@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     AuditEvent,
     Conversation,
-    ConversationMessage,
     EvidenceRecordModel,
     Task,
     TaskEvent,
@@ -134,16 +133,6 @@ class TaskRepository:
             select(EvidenceRecordModel)
             .where(EvidenceRecordModel.task_id == task_id)
             .order_by(EvidenceRecordModel.created_at)
-        )
-        return list(result)
-
-    async def messages(self, task_id: UUID, *, after: int = 0, limit: int = 200) -> list[ConversationMessage]:
-        await self.get(task_id)
-        result = await self._session.scalars(
-            select(ConversationMessage).where(
-                ConversationMessage.task_id == task_id,
-                ConversationMessage.id > after,
-            ).order_by(ConversationMessage.id).limit(limit)
         )
         return list(result)
 

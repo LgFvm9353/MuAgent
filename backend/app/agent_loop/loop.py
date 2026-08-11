@@ -129,11 +129,26 @@ class AgentLoop:
         await self._idle.wait()
 
     def inherit_context(self, parent: "AgentLoop") -> None:
-        """Seed a fresh child with a snapshot of a parent transcript."""
+        """Seed a child with a safe snapshot of the parent's conversation.
+
+        Parent tool-call messages are orchestration implementation details, not
+        child instructions.  Keeping them in a fork both wastes context and
+        lets a child accidentally replay the parent's tool protocol.  Retain
+        ordinary user/assistant text, while dropping assistant messages that
+        contain tool calls and all tool result messages.
+        """
         if self._task is not None and not self._task.done():
             raise AgentLoopError("cannot_inherit_context_while_running")
-        self._messages = list(parent._messages)
-        self.transcript = list(parent.transcript)
+        self._messages = [
+            dict(message)
+            for message in parent._messages
+            if message.get("role") != "tool" and not message.get("tool_calls")
+        ]
+        self.transcript = [
+            message
+            for message in parent.transcript
+            if message.role != "tool" and not message.metadata.get("tool_call_id")
+        ]
 
     async def _emit(self, event: AgentLoopEvent) -> None:
         if self.events is None:

@@ -18,8 +18,11 @@ class AgentContextBuilder:
             "user_message": user_text,
             "relevant_history": relevant_history,
             "instruction": (
-                "Respond independently as this agent. Do not claim that tools were executed. "
-                "If real-world changes are required, explain that controlled execution is needed."
+                "Respond as the parent supervisor. Use the tools granted by the runtime when they "
+                "are needed. For an implementation, creation, modification, or repair request, "
+                "delegate the approved work to worker and require real workspace file-tool calls; "
+                "do not replace execution with a code listing or ask for confirmation that the "
+                "user has already provided. Only report a change after tool evidence exists."
             ),
         }
         if memory is not None:

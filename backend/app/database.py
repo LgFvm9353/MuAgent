@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 
 from sqlalchemy.engine import make_url
@@ -7,6 +8,39 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+
+from app.logging import logger
+
+
+class SafeAsyncSession(AsyncSession):
+    """Close sessions safely when an SSE request is cancelled mid-query.
+
+    asyncmy can lose its underlying writer while SQLAlchemy is doing the
+    rollback performed by ``AsyncSession.close``.  The resulting cleanup
+    exception is not an application failure and must not become an unhandled
+    task exception.  Invalidating the connection is the safe fallback.
+    """
+
+    async def close(self) -> None:
+        try:
+            await super().close()
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(super().invalidate())
+            except BaseException as cleanup_error:
+                logger().debug(
+                    "database session invalidation failed after cancellation",
+                    error_type=type(cleanup_error).__name__,
+                )
+            raise
+        except Exception:
+            try:
+                await asyncio.shield(super().invalidate())
+            except BaseException as cleanup_error:
+                logger().debug(
+                    "database session invalidation failed after close error",
+                    error_type=type(cleanup_error).__name__,
+                )
 
 
 class Database:
@@ -21,7 +55,7 @@ class Database:
         )
         self.session_factory = async_sessionmaker(
             self.engine,
-            class_=AsyncSession,
+            class_=SafeAsyncSession,
             expire_on_commit=False,
         )
 

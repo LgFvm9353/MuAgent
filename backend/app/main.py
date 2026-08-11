@@ -10,8 +10,8 @@ from app.api.capabilities import router as capabilities_router
 from app.api.conversations import router as conversations_router
 from app.api.memories import router as memories_router
 from app.api.projects import router as projects_router
-from app.api.tasks import router as tasks_router
 from app.api.supervisor import router as supervisor_router
+from app.api.tasks import router as tasks_router
 from app.config import get_settings
 from app.database import Database
 from app.logging import configure_logging
@@ -21,16 +21,17 @@ from app.mcp.sdk_connector import SdkMcpConnector
 from app.memory.service import MemoryService
 from app.orchestrator.coordinator import Coordinator
 from app.orchestrator.recovery import RecoveryService
+from app.services.conversation import JsonConversationStore
 from app.skills.registry import SkillRegistry
 from app.tools.factory import build_tool_registry, ensure_storage_roots
 from app.tools.providers import McpToolProvider
 from app.tools.subagent import (
     AttachLoop,
     ContextMode,
-    SupervisorInbox,
     SubagentRunManager,
-    register_supervisor_tool,
+    SupervisorInbox,
     register_subagent_tool,
+    register_supervisor_tool,
 )
 
 PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
@@ -44,6 +45,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     ensure_storage_roots(settings)
     application.state.settings = settings
     application.state.database = Database(settings.database_url)
+    application.state.conversation_store = JsonConversationStore(
+        settings.conversation_history_root
+    )
     application.state.memory_service = MemoryService(settings, BACKEND_ROOT.parent)
     application.state.tool_registry = build_tool_registry(settings, settings.workspace_root)
 
@@ -64,6 +68,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.subagent_manager = SubagentRunManager(
         run_subagent,
         supervisor_inbox=application.state.supervisor_inbox,
+        artifact_root=settings.artifacts_root / "subagents",
     )
     register_subagent_tool(
         application.state.tool_registry,
@@ -94,6 +99,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         PROMPTS_ROOT,
         application.state.tool_registry,
         application.state.skill_registry,
+        application.state.conversation_store,
     )
     async with application.state.database.session_factory() as session:
         recovery = RecoveryService(session)
@@ -103,6 +109,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     finally:
         await application.state.subagent_manager.close()
         await application.state.coordinator.close()
+        await application.state.conversation_store.flush()
         await application.state.mcp_manager.close(
             timeout_seconds=settings.mcp_close_timeout_seconds
         )
